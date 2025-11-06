@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from pathlib import Path
-import os
 from tempfile import gettempdir
 
 from src.data_loader import read_excel_all, build_weights_dict, questions_from_weights
@@ -13,7 +12,7 @@ st.set_page_config(page_title="Վաճառքի կետերի գնահատման դ
 
 @st.cache_data(show_spinner=False)
 def load_excel_bytes(b: bytes):
-    return b  # placeholder to leverage cache key
+    return b
 
 @st.cache_data(show_spinner=True)
 def parse_workbooks(path: Path):
