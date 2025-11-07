@@ -1,0 +1,1 @@
+* text=auto\n*.py text eol=lf\n*.ipynb text eol=lf\n*.bat text eol=crlf

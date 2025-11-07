@@ -223,6 +223,8 @@ with tab_sections:
         section = st.selectbox("Բաժին", options=sorted(ps["section"].dropna().unique()))
         df_sec = ps[ps["section"]==section].rename(columns={"score_section_pct":"score"})
         ui.rating_table(df_sec, "score", f"Բաժին «{section}» — խանութների ռեյտինգ")
+    else:
+        st.info("Տվյալներ չկան։")
 
     # Расчёт веса раздела из вопросов текущего сценария (ΣF)
     w_scen = st.session_state.weights[st.session_state.weights["scenario"] == scen].copy()
