@@ -1,0 +1,4 @@
+cmake
+g++
+make
+ninja-build
