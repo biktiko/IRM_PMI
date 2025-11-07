@@ -31,7 +31,7 @@ def _save_uploaded(upl):
     return dst
 
 st.sidebar.title("Տվյալների ներմուծում")
-upl = st.sidebar.file_uploader("Բեռնեք Excel (BR թերթեր + LAS/YAP կշիռ)", type=["xlsx","xls"])
+upl = st.sidebar.file_uploader("Բեռնեք Excel ֆայլը", type=["xlsx","xls"])
 
 state = st.session_state
 if "bases" not in state:
@@ -67,7 +67,7 @@ if selected_path is not None and state.get("last_file") != str(selected_path):
 state.ratings_list = []
 
 if not state.bases:
-    st.info("Բեռնեք Excel կամ տեղադրեք այն imports պանակում։")
+    st.info("Բեռնեք Excel ֆայլը")
     st.stop()
 # ===== end persistence block =====
 
