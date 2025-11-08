@@ -73,3 +73,4 @@ def download_buttons(dfs: dict):
             file_name=f"{name}.csv",
             mime="text/csv"
         )
+
