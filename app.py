@@ -339,8 +339,8 @@ with st.expander("Ներդրված տվյալներ"):
 from src import ui
 pq, ps, psc, pstore, _raw = aggregate_scores(flt)
 
-tab_overview, tab_stores, tab_scen, tab_sections, tab_questions, tab_compare, tab_export, tab_visits = st.tabs(
-    ["Ընդհանուր", "Խանութներ", "Սցենարներ", "Բաժիններ", "Հարցեր", "Համեմատել", "Արտահանում", "Այցելություններ"]  # NEW
+tab_overview, tab_stores, tab_scen, tab_sections, tab_compare, tab_export, tab_visits = st.tabs(
+    ["Ընդհանուր", "Խանութներ", "Սցենարներ", "Բաժիններ", "Համեմատել", "Արտահանում", "Այցելություններ"]  # NEW
 )
 
 with tab_overview:
