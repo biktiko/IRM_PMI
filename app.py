@@ -171,7 +171,7 @@ with st.expander("Տվյալների կարգավորումներ և ֆիլտր�
         default_store_idx = options_cols.index(auto_store)
         store_col = st.selectbox(f"[{scen}] Խանութի սյունակ", options=options_cols, index=default_store_idx)
 
-        # НОРМАЛИЗАЦИЯ ՆԱԶՎԱՆԻՅ ՄԱԳԱԶԻՆՈՎ (чтобы 'Խանութ  A' == 'Խանութ A')
+        # НՈՐՄԱԼԻԶԱՑԻԱ ՆԱԶՎԱՆԻՅ ՄԱԳԱԶԻՆՈՎ (чтобы 'Խանութ  A' == 'Խանութ A')
         if store_col in df_scene.columns:
             df_scene[store_col] = _normalize_store_col(df_scene[store_col])
 
@@ -320,15 +320,17 @@ with st.expander("Տվյալների կարգավորումներ և ֆիլտր�
     scenarios = sorted(df_all["scenario"].dropna().unique().tolist())
     sections = sorted(df_all["section"].dropna().unique().tolist())
 
-    sel_scen = st.multiselect("Սցենարներ", options=scenarios, default=scenarios)
-    sel_stores = st.multiselect("Խանութներ", options=stores, default=stores)
+    # по умолчанию — пусто (значит, фильтра нет)
+    sel_scen = st.multiselect("Սցենարներ", options=scenarios, default=[])
+    sel_stores = st.multiselect("Խանութներ", options=stores, default=[])
     sel_sec = st.multiselect("Բաժիններ", options=sections, default=sections)
 
 # --- 4) Apply filters once selections are made ---
+# пустой выбор = True (не фильтруем по полю)
 flt = df_all[
-    df_all["store"].isin(sel_stores)
-    & df_all["scenario"].isin(sel_scen)
-    & df_all["section"].isin(sel_sec)
+    (df_all["store"].isin(sel_stores)   if sel_stores else True) &
+    (df_all["scenario"].isin(sel_scen)  if sel_scen  else True) &
+    (df_all["section"].isin(sel_sec)    if sel_sec   else True)
 ]
 
 with st.expander("Ներդրված տվյալներ"):
@@ -475,31 +477,56 @@ with tab_scen:
 
 with tab_sections:
     st.subheader("Համեմատություն ըստ բաժինների")
-    # сценарий для сравнения весов
-    if not state.weights.empty:
-        scen_for_weights = st.selectbox(
-            "Սցենար (կշիռների համեմատության համար)",
-            options=sorted(state.weights["scenario"].dropna().unique()),
-            key="sec_weight_scen"
-        )
-        w_scen = state.weights[state.weights["scenario"] == scen_for_weights].copy()
-        # вычислить ΣF (сумма weight_in_scenario по разделу)
-        if not w_scen.empty and "weight_in_scenario" in w_scen.columns:
-            calc = (w_scen.groupby("section", as_index=False)
-                          .agg(section_weight_calc=("weight_in_scenario","sum"))
-                          .assign(section_weight_calc=lambda d: (d["section_weight_calc"]*100).round(1)))
-        else:
-            calc = pd.DataFrame(columns=["section","section_weight_calc"])
-    else:
-        w_scen = pd.DataFrame()
-        calc = pd.DataFrame(columns=["section","section_weight_calc"])
 
-    if not ps.empty:
-        st.dataframe(pq.sort_values(["scenario","section","store","question_key"])[
-            ["store","scenario","section","question_key","score_question_pct"]
-        ].round(1), use_container_width=True)
+    # === Multi‑selects for scenarios & stores ===
+    scen_opts = sorted(state.weights["scenario"].dropna().unique()) if not state.weights.empty else []
+    sel_scenarios = st.multiselect(
+        "Սցենարներ (կշիռների համեմատության համար)",
+        options=scen_opts,
+        default=scen_opts,
+        key="sec_weight_scen_multi"
+    )
+
+    store_opts = sorted(ps["store"].dropna().unique()) if not ps.empty else []
+    sel_section_stores = st.multiselect(
+        "Խանութներ",
+        options=store_opts,
+        default=store_opts,
+        key="sec_weight_store_multi"
+    )
+
+    # === Section weights per selected scenarios ===
+    if sel_scenarios and not state.weights.empty:
+        w_sel = state.weights[state.weights["scenario"].isin(sel_scenarios)].copy()
+        if not w_sel.empty and "weight_in_scenario" in w_sel.columns:
+            sec_weights = (
+                w_sel.groupby(["scenario","section"], as_index=False)
+                     .agg(section_weight_pct=("weight_in_scenario","sum"))
+                     .assign(section_weight_pct=lambda d: (d["section_weight_pct"]*100).round(1))
+                     .sort_values(["scenario","section"])
+            )
+            st.markdown("**Կշիռներ ըստ բաժնի (ընտրված սցենարներ)**")
+            st.dataframe(sec_weights, use_container_width=True)
+        else:
+            st.info("Կշիռները չեն գտնվել ընտրված սցենարների համար։")
     else:
-        st.info("Տվյալներ չկան։")
+        st.info("Ընտրեք առնվազն մեկ սցենար կշիռների համար։")
+
+    # === Questions table filtered by selected scenarios & stores ===
+    if not pq.empty and sel_scenarios and sel_section_stores:
+        pq_filtered = pq[pq["scenario"].isin(sel_scenarios) & pq["store"].isin(sel_section_stores)]
+        if not pq_filtered.empty:
+            st.markdown("**Հարցերի արդյունքներ (ֆիլտրացված)**")
+            st.dataframe(
+                pq_filtered.sort_values(["scenario","section","store","question_key"])[
+                    ["store","scenario","section","question_key","score_question_pct"]
+                ].round(1),
+                use_container_width=True
+            )
+        else:
+            st.info("Չկան հարցեր տվյալ ֆիլտրերով։")
+    else:
+        st.info("Չկան տվյալներ կամ ֆիլտրերը դատարկ են։")
 
 with tab_compare:
     st.subheader("Համեմատել երկու խանութ")
@@ -529,7 +556,7 @@ with tab_visits:
         st.info("Այցելությունների կամ մեկնաբանությունների տվյալներ չկան։")
     else:
         if not visits_df.empty:
-            # Фильтры вертикально и без NaN
+            # Фильтры вертикально and без NaN
             v_scen = st.multiselect(
                 "Սցենար(ներ)",
                 options=sorted(visits_df["scenario"].dropna().unique()),
