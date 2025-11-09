@@ -1,0 +1,6 @@
+[theme]
+base = "light"            # или "dark"
+primaryColor = "#529093"  # твой бренд-акцент
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F6F8FB"  # мягкая подложка для панелей/контейнеров
+textColor = "#1F2A37"

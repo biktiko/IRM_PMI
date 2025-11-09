@@ -7,7 +7,8 @@ import hashlib, os
 from src.data_loader import read_excel_all, build_weights_dict, questions_from_weights
 from src.scoring import long_from_base, join_weights, aggregate_scores, extract_10pt_rating
 import src.scoring as scoring
-from src.utils import _parse_visit_date, pick_col
+from src.utils import _parse_visit_date, pick_col, brand_theme, brand_bar_chart, _normalize_store_col
+import altair as alt
 
 def _sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
@@ -15,7 +16,7 @@ def _sha256(s: str) -> str:
 # --- Credentials loader (supports multiple secret/env names) ---
 def _load_creds():
     def _get(key):
-        # пробуем secrets, иначе env
+        # probuyem secrets, inacze env
         try:
             return st.secrets[key]
         except Exception:
@@ -32,7 +33,7 @@ def _load_creds():
     )
     password_hash = _get("APP_PASS_HASH")
 
-    # если хэш не задан, но password_plain выглядит как 64 hex — считаем хэшем
+    # ete hesh@ chi sahmanvats, bayc password_plain@ 64 heqs tzeq@ hanelu — hamarvum enq hesh e
     if not password_hash and password_plain and len(password_plain) == 64 and all(c in "0123456789abcdef" for c in password_plain.lower()):
         password_hash = password_plain
         password_plain = None
@@ -41,7 +42,7 @@ def _load_creds():
 APP_USERNAME, APP_PASSWORD_PLAIN, APP_PASSWORD_HASH = _load_creds()
 
 def _check_password(inp: str) -> bool:
-    # 1) если есть хэш — проверяем по SHA256
+    # 1) ete ka hesh՝ stugum enq SHA256-ov
     if APP_PASSWORD_HASH:
         return _sha256(inp) == APP_PASSWORD_HASH
     # 2) fallback plain
@@ -52,7 +53,7 @@ def _check_password(inp: str) -> bool:
 st.set_page_config(page_title="Վաճառքի կետերի գնահատման դաշբորդ", layout="wide")
 
 # --- AUTH ---
-if st.sidebar.button("Logout / Դուրս գալ", disabled=not st.session_state.get("auth_ok")):
+if st.sidebar.button("Logout", disabled=not st.session_state.get("auth_ok")):
     for k in ("auth_ok","auth_user"):
         st.session_state.pop(k, None)
     st.rerun()
@@ -103,6 +104,9 @@ if "bases" not in state:
     state.weights = pd.DataFrame()
     state.last_file = None
 
+alt.themes.register("brand", brand_theme)
+alt.themes.enable("brand")
+
 # Выбор источника: либо новый аплоад -> сохраняем, либо последний файл из imports
 selected_path = None
 if upl is not None:
@@ -140,9 +144,6 @@ st.sidebar.markdown("---")
 prepared = []
 state.ratings_list = []
 
-# Helper: robust picker по нормализованному имени
-
-
 with st.expander("Տվյալների կարգավորումներ և ֆիլտրեր", expanded=False):
     for scen, base in state.bases.items():
         # comment: normalize scenario name
@@ -170,6 +171,10 @@ with st.expander("Տվյալների կարգավորումներ և ֆիլտր�
         default_store_idx = options_cols.index(auto_store)
         store_col = st.selectbox(f"[{scen}] Խանութի սյունակ", options=options_cols, index=default_store_idx)
 
+        # НОРМАЛИЗАЦИЯ ՆԱԶՎԱՆԻՅ ՄԱԳԱԶԻՆՈՎ (чтобы 'Խանութ  A' == 'Խանութ A')
+        if store_col in df_scene.columns:
+            df_scene[store_col] = _normalize_store_col(df_scene[store_col])
+
         default_skip = [c for c in options_cols[:8] if c != store_col]
         skip_cols = st.multiselect(f"[{scen}] Չհաշվարկվող սյունակներ", options=options_cols, default=default_skip)
 
@@ -196,6 +201,10 @@ with st.expander("Տվյալների կարգավորումներ և ֆիլտր�
     # --- 2) Build df_all and ratings, validate ---
     df_all = pd.concat(prepared, ignore_index=True) if prepared else pd.DataFrame()
     ratings = pd.concat(state.ratings_list, ignore_index=True) if state.ratings_list else pd.DataFrame()
+
+    # финальная нормализация на всякий случай (если что-то проскочило)
+    if not df_all.empty and "store" in df_all.columns:
+        df_all["store"] = _normalize_store_col(df_all["store"])
 
     if df_all.empty:
         st.error("Հնարավոր չեղավ պատրաստել տվյալները։ Ստուգեք ներբեռված ֆայլը և կշիռների թերթերը։")
@@ -229,8 +238,9 @@ with st.expander("Տվյալների կարգավորումներ և ֆիլտր�
 
     for scen_name, base_df in state.bases.items():
         dfb = base_df.copy()
-
         store_col = pick_col(dfb, keys=["store","Մասնաճյուղի անվանում","Խանութ","Խանութի անվանում","Shop","Store"]) or dfb.columns[0]
+        if store_col in dfb.columns:
+            dfb[store_col] = _normalize_store_col(dfb[store_col])
         start_col = pick_col(dfb, keys=["Այցելության սկիզբ","Visit start"]) or pick_col(dfb, contains=["սկիզ","start"])
         end_col   = pick_col(dfb, keys=["Այցելության ավարտ","Visit end"])   or pick_col(dfb, contains=["ավարտ","end"])
         dur_col   = pick_col(dfb, keys=["Այցի ընդհանուր տևողություն","Duration"]) or pick_col(dfb, contains=["տևող","dur"])
@@ -250,12 +260,12 @@ with st.expander("Տվյալների կարգավորումներ և ֆիլտր�
             duration_min = dur_min.copy()
             duration_min = duration_min.where(duration_min.notna(), calc_min)
 
-            # Базовая дата визита (если нет — фиктивная)
+            # Բազային այցի ամսաթիվ (եթե չկա՝ կեղծ)
             visit_date_raw = dfb.get(date_col) if date_col else None
             visit_date = _parse_visit_date(visit_date_raw)  # NEW robust parsing
             base_date = visit_date.where(visit_date.notna(), pd.NaT)
 
-            # если нет даты, не добавляем фиктивную 1900-01-01; оставляем NaT
+            # եթե ամսաթիվ չկա, չավելացնել կեղծ 1900-01-01; թողնել NaT
             if base_date.notna().any():
                 visit_start = base_date + pd.to_timedelta(start_min, unit="m")
                 visit_end   = base_date + pd.to_timedelta(end_min,   unit="m")
@@ -339,6 +349,30 @@ with st.expander("Ներդրված տվյալներ"):
 from src import ui
 pq, ps, psc, pstore, _raw = aggregate_scores(flt)
 
+# --- weights per question (merge from raw) ---
+if not _raw.empty and not pq.empty:
+    qw = (
+        _raw.groupby(["store","scenario","section","question_key"], as_index=False)
+            .agg(
+                weight_in_section=("weight_in_section","first"),
+                weight_in_scenario=("weight_in_scenario","first"),
+            )
+    )
+    pq = pq.merge(qw, on=["store","scenario","section","question_key"], how="left")
+
+    # нормализация к долям и проценты для показа
+    for c in ["weight_in_section","weight_in_scenario"]:
+        if c in pq.columns:
+            pq[c] = pd.to_numeric(pq[c], errors="coerce")
+
+    # показываем вес вопроса в сценарии (если его нет — берём вес в секции)
+    w_frac = pq["weight_in_scenario"].fillna(pq["weight_in_section"])
+    pq["question_weight_pct"] = (w_frac * 100).round(2)
+
+    # вклад вопроса в итог сценария
+    pq["weighted_score_pct"] = (pq["score_question_pct"] * w_frac).round(2)
+# ...existing code...
+
 tab_overview, tab_stores, tab_scen, tab_sections, tab_compare, tab_export, tab_visits = st.tabs(
     ["Ընդհանուր", "Խանութներ", "Սցենարներ", "Բաժիններ", "Համեմատել", "Արտահանում", "Այցելություններ"]  # NEW
 )
@@ -379,10 +413,57 @@ with tab_stores:
     st.subheader("Խանութի պրոֆիլ")
     if not pstore.empty:
         store = st.selectbox("Ընտրեք խանութ", options=sorted(pstore["store"].unique()))
+        # --- Статистика магазина (экспандер открыт по умолчанию)
+        if not pq.empty:
+            s_pq = pq[pq["store"] == store].copy()
+            scen_summary = (
+                s_pq.groupby("scenario", as_index=False)
+                    .agg(
+                        total_weight_pct=("question_weight_pct","sum"),
+                        avg_score_pct=("score_question_pct","mean"),
+                        weighted_score_sum=("weighted_score_pct","sum")
+                    )
+            )
+            sec_summary = (
+                s_pq.groupby(["scenario","section"], as_index=False)
+                    .agg(
+                        section_weight_pct=("question_weight_pct","sum"),
+                        section_avg_score_pct=("score_question_pct","mean"),
+                        section_weighted_sum=("weighted_score_pct","sum")
+                    )
+            )
+            with st.expander("Մանրամասն վիճակագրություն խանութի մասին", expanded=True):
+                # Метрики по сценариям
+                if not scen_summary.empty:
+                    cols_m = st.columns(len(scen_summary))
+                    for i, row in scen_summary.iterrows():
+                        cols_m[i].metric(
+                            label=f"{row['scenario']} (կշռ. միավորներ)",
+                            value=f"{row['weighted_score_sum']:.1f}",
+                            delta=f"Միջ. % {row['avg_score_pct']:.1f}"
+                        )
+                    st.dataframe(
+                        scen_summary.rename(columns={
+                            "total_weight_pct":"Ընդհանուր կշիռ %",
+                            "avg_score_pct":"Միջին %",
+                            "weighted_score_sum":"Կշռ. միավորների գումար"
+                        }).round(2),
+                        use_container_width=True
+                    )
+                if not sec_summary.empty:
+                    st.markdown("**Բաժինների մանրամասն ըստ սցենարի**")
+                    st.dataframe(
+                        sec_summary.rename(columns={
+                            "section_weight_pct":"Բաժնի կշիռ %",
+                            "section_avg_score_pct":"Միջին %",
+                            "section_weighted_sum":"Կշռ. միավորների գումար"
+                        }).round(2).sort_values(["scenario","section"]),
+                        use_container_width=True
+                    )
         ui.store_profile(ps, pq, store)
     else:
         st.info("Տվյալներ չկան։")
-
+        
 with tab_scen:
     st.subheader("Ռեյտինգ ըստ սցենարների")
     if not psc.empty:
