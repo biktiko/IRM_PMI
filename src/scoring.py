@@ -1,7 +1,7 @@
 from typing import Tuple
-import re
-import numpy as np
 import pandas as pd
+import numpy as np
+import re
 
 from .common import to_binary, norm, excel_col_to_idx
  
@@ -191,6 +191,19 @@ def recalc_section_totals(df: pd.DataFrame) -> pd.DataFrame:
         out.append(g)
     return pd.concat(out, ignore_index=True)
 
+def _opinion_mask_from_key(s: pd.Series) -> pd.Series:
+    if s is None:
+        return pd.Series(False, index=[])
+    txt = s.astype(str)
+    patt_rating = r"0\s*[-–—]\s*10|0\s*to\s*10|0\s*\/\s*10"
+    patt_comment_hy = r"Ի՞նչ\s+կարելի\s+է\s+անել\s+փորձը\s+բարելավելու\s+համար"
+    patt_ms_overall_hy = r"MS-ի\s+ընդհանուր\s+տպավորություններ"
+    return (
+        txt.str.contains(patt_rating, flags=re.IGNORECASE, regex=True, na=False)
+        | txt.str.contains(patt_comment_hy, flags=re.IGNORECASE, regex=True, na=False)
+        | txt.str.contains(patt_ms_overall_hy, flags=re.IGNORECASE, regex=True, na=False)
+    )
+
 # --- Total score (по всем сценариям) ---
 def total_score_table(df_all: pd.DataFrame) -> pd.DataFrame:
     """
@@ -202,18 +215,15 @@ def total_score_table(df_all: pd.DataFrame) -> pd.DataFrame:
 
     d = df_all.copy()
     d["w"] = pd.to_numeric(d.get("weight_in_scenario"), errors="coerce").fillna(0.0)
-    d["ans"] = pd.to_numeric(d.get("answer_bin"), errors="coerce").fillna(0.0)
-
-    d = d[d["w"] > 0]
     if "question_key" in d.columns:
         d = d[~_opinion_mask_from_key(d["question_key"])]
-
+    d["ans"] = pd.to_numeric(d.get("answer_bin"), errors="coerce").fillna(0.0)
     d["num"] = d["ans"] * d["w"]
     g = d.groupby("store", as_index=False).agg(
         total_points=("num","sum"),
         max_points=("w","sum"),
     )
-    g["total_score_pct"] = np.where(g["max_points"] > 0, g["total_points"]/g["max_points"], np.nan)
+    g["total_score_pct"] = np.where(g["max_points"]>0, g["total_points"]/g["max_points"], np.nan)
     g["total_score_pct_display"] = (g["total_score_pct"]*100).round(2)
     return g[["store","total_points","max_points","total_score_pct","total_score_pct_display"]]
 
@@ -388,23 +398,3 @@ def scenario_subset_scores(
     )
     g["value_pct"] = np.where(g["max_sum"]>0, g["gained_sum"]/g["max_sum"]*100, np.nan).round(2)
     return g[["store","value_pct"]]
-
-def _opinion_mask_from_key(s: pd.Series) -> pd.Series:
-    """
-    Выявляет 'мнение' вопросы: 0–10 рейтинг, открытый комментарий и «MS-ի ընդհանուր տպավորություններ».
-    """
-    if s is None:
-        return pd.Series(False, index=[])
-    txt = s.astype(str)
-    patt_rating = r"0\s*[-–—]\s*10|0\s*to\s*10|0\s*\/\s*10"
-    patt_comment_hy = r"Ի՞նչ\s+կարելի\s+է\s+անել\s+փորձը\s+բարելավելու\s+համար"
-    patt_comment_ru = r"что\s+можно\s+сделать\s+для\s+улучшения"
-    patt_comment_en = r"what\s+can\s+be\s+done\s+to\s+improve"
-    patt_ms_overall_hy = r"MS-ի\s+ընդհանուր\s+տպավորություններ"
-    return (
-        txt.str.contains(patt_rating, flags=re.IGNORECASE, regex=True, na=False)
-        | txt.str.contains(patt_comment_hy, flags=re.IGNORECASE, regex=True, na=False)
-        | txt.str.contains(patt_comment_ru, flags=re.IGNORECASE, regex=True, na=False)
-        | txt.str.contains(patt_comment_en, flags=re.IGNORECASE, regex=True, na=False)
-        | txt.str.contains(patt_ms_overall_hy, flags=re.IGNORECASE, regex=True, na=False)
-    )
