@@ -144,7 +144,7 @@ st.sidebar.markdown("---")
 prepared = []
 state.ratings_list = []
 
-with st.expander("Տվյալների կարգավորումներ և ֆիլտրեր", expanded=False):
+with st.container():  # скрытый պատրաստողական բլոկ առանց UI
     for scen, base in state.bases.items():
         # comment: normalize scenario name
         scen = scen if scen in ["BR1", "BR2", "BR3", "BR4", "BR5"] else "BR1"
@@ -153,7 +153,7 @@ with st.expander("Տվյալների կարգավորումներ և ֆիլտր�
         df_scene = scoring.filter_by_scenario_column(base, scen)
 
         # comment: small header (no huge H2)
-        st.markdown(f"<h4>{scen} սցենարի մշակումը</h4>", unsafe_allow_html=True)
+        # st.markdown(f"<h4>{scen} սցենարի մշակումը</h4>", unsafe_allow_html=True)
 
         # comment: get question keys from weights
         qkeys = questions_from_weights(state.weights, scen)
@@ -163,20 +163,18 @@ with st.expander("Տվյալների կարգավորումներ և ֆիլտր�
 
         # comment: choose store column & skip columns
         options_cols = list(df_scene.columns)
-        auto_store = (
-            pick_col(df_scene, keys=[
-                "store","Մասնաճյուղի անվանում","Խանութ","Խանութի անվանում","Shop","Store"
-            ]) or (options_cols[1] if len(options_cols) > 1 else options_cols[0])
+        # авто-պարզել խանութի սյունակը (без UI)
+        store_col = (
+            pick_col(df_scene, keys=["store","Մասնաճյուղի անվանում","Խանութ","Խանութի անվանում","Shop","Store"])
+            or (options_cols[1] if len(options_cols) > 1 else options_cols[0])
         )
-        default_store_idx = options_cols.index(auto_store)
-        store_col = st.selectbox(f"[{scen}] Խանութի սյունակ", options=options_cols, index=default_store_idx)
 
-        # НՈՐՄԱԼԻԶԱՑԻԱ ՆԱԶՎԱՆԻՅ ՄԱԳԱԶԻՆՈՎ (чтобы 'Խանութ  A' == 'Խանութ A')
+        # ՆՈՐՄԱԼԻԶԱՑԻԱ ՆԱԶՎԱՆԻՅ ՄԱԳԱԶԻՆՈՎ (чтобы 'Խանութ  A' == 'Խանութ A')
         if store_col in df_scene.columns:
             df_scene[store_col] = _normalize_store_col(df_scene[store_col])
 
-        default_skip = [c for c in options_cols[:8] if c != store_col]
-        skip_cols = st.multiselect(f"[{scen}] Չհաշվարկվող սյունակներ", options=options_cols, default=default_skip)
+        # список пропускаемых колонок — по умолчанию (без UI)
+        skip_cols = [c for c in options_cols[:8] if c != store_col]
 
         # comment: prepare long form for scoring
         drop_list = [c for c in skip_cols if c in df_scene.columns and c != store_col]
@@ -244,7 +242,13 @@ with st.expander("Տվյալների կարգավորումներ և ֆիլտր�
         start_col = pick_col(dfb, keys=["Այցելության սկիզբ","Visit start"]) or pick_col(dfb, contains=["սկիզ","start"])
         end_col   = pick_col(dfb, keys=["Այցելության ավարտ","Visit end"])   or pick_col(dfb, contains=["ավարտ","end"])
         dur_col   = pick_col(dfb, keys=["Այցի ընդհանուր տևողություն","Duration"]) or pick_col(dfb, contains=["տևող","dur"])
-        date_col  = pick_col(dfb, keys=["Այցելության ամսաթիվ","Visit date"]) or pick_col(dfb, contains=["ամսաթ","date"])  # NEW
+        date_col  = pick_col(dfb, keys=["Այցելության ամսաթիվ","Visit date"]) or pick_col(dfb, contains=["ամսաթ","date"])
+
+        # Նորմալիզացված ամսաթվի Series (եթե չկա, բոլոր արժեքները NaT)
+        if date_col and date_col in dfb.columns:
+            base_date = _parse_visit_date(dfb[date_col])
+        else:
+            base_date = pd.Series(pd.NaT, index=dfb.index)
 
         has_time = bool(start_col or end_col or dur_col)
         if has_time:
@@ -252,34 +256,32 @@ with st.expander("Տվյալների կարգավորումներ և ֆիլտր�
             end_min   = _to_minutes(dfb.get(end_col,   pd.Series(index=dfb.index, dtype="float")))
             dur_min   = _to_minutes(dfb.get(dur_col,   pd.Series(index=dfb.index, dtype="float")))
 
-            # вычисляем из start/end
+            # Вычисляем длительность из start/end
             calc_min = end_min - start_min
             calc_min = calc_min.mask(calc_min < 0, calc_min + 24*60)  # переход через полночь
 
-            # если длительность не дана — берём из расчёта
-            duration_min = dur_min.copy()
-            duration_min = duration_min.where(duration_min.notna(), calc_min)
+            # Итоговая длительность: եթե կա առանձին dur_min — վերցնում ենք այն, այլապես calc_min
+            visit_duration_min = dur_min.where(dur_min.notna(), calc_min)
 
-            # Բազային այցի ամսաթիվ (եթե չկա՝ կեղծ)
-            visit_date_raw = dfb.get(date_col) if date_col else None
-            visit_date = _parse_visit_date(visit_date_raw)  # NEW robust parsing
-            base_date = visit_date.where(visit_date.notna(), pd.NaT)
-
-            # եթե ամսաթիվ չկա, չավելացնել կեղծ 1900-01-01; թողնել NaT
+            # Формируем временные метки միայն եթե կա ոչ դատարկ ամսաթիվ
             if base_date.notna().any():
                 visit_start = base_date + pd.to_timedelta(start_min, unit="m")
                 visit_end   = base_date + pd.to_timedelta(end_min,   unit="m")
                 cross_mid = (end_min.notna() & start_min.notna() & (end_min < start_min))
                 visit_end = visit_end.where(~cross_mid, visit_end + pd.Timedelta(days=1))
+            else:
+                visit_start = pd.Series(pd.NaT, index=dfb.index)
+                visit_end   = pd.Series(pd.NaT, index=dfb.index)
 
-                tmp = pd.DataFrame({
-                    "store": dfb[store_col],  # НЕ превращаем NaN в "nan"
-                    "scenario": scen_name if scen_name in ["BR1","BR2","BR3","BR4","BR5"] else "BR1",
-                    "visit_start": visit_start,
-                    "visit_end": visit_end,
-                    "visit_duration_min": duration_min
-                })
-                tmp = tmp.dropna(subset=["store"])  # убрать строки без магазина
+            tmp = pd.DataFrame({
+                "store": dfb[store_col],
+                "scenario": scen_name if scen_name in ["BR1","BR2","BR3","BR4","BR5"] else "BR1",
+                "visit_start": visit_start,
+                "visit_end": visit_end,
+                "visit_duration_min": visit_duration_min
+            })
+            tmp = tmp.dropna(subset=["store"])  # убрать строки առանց խանութի
+            if tmp["visit_start"].notna().any():
                 tmp["hour"] = tmp["visit_start"].dt.hour
                 def _tod(h):
                     if pd.isna(h): return "Unknown"
@@ -289,11 +291,13 @@ with st.expander("Տվյալների կարգավորումներ և ֆիլտր�
                     if 18 <= h < 22: return "Evening"
                     return "Night"
                 tmp["time_of_day"] = tmp["hour"].map(_tod)
-                visits_rows.append(tmp)
+            else:
+                tmp["time_of_day"] = "Unknown"
+            visits_rows.append(tmp)
 
         # Открытые ответы
         com1_col = pick_col(dfb, keys=["Մեկնաբանություն"]) or pick_col(dfb, contains=["մեկն"])
-        # Несколько вариантов написания вопроса про улучшения
+        # Несколько տարբերակների գրություն հարցի բարելավումների մասին
         com2_col = (
             pick_col(dfb, keys=["Ի՞նչ կարելի է անել փորձը բարելավելու համար", "Ի՞նչ կարելի է անել փորձը բարելավելու համար։"])
             or pick_col(dfb, contains=["բարելավ","ինչ"])
@@ -315,22 +319,21 @@ with st.expander("Տվյալների կարգավորումներ և ֆիլտր�
     comments_df = pd.concat(comments_rows, ignore_index=True) if comments_rows else pd.DataFrame()
 
 # --- 3) Filters AFTER df_all exists ---
+with st.expander("Ֆիլտրեր", expanded=False):
     st.header("Ֆիլտրեր")
     stores = sorted(df_all["store"].dropna().unique().tolist())
     scenarios = sorted(df_all["scenario"].dropna().unique().tolist())
     sections = sorted(df_all["section"].dropna().unique().tolist())
 
-    # по умолчанию — пусто (значит, фильтра нет)
-    sel_scen = st.multiselect("Սցենարներ", options=scenarios, default=[])
-    sel_stores = st.multiselect("Խանութներ", options=stores, default=[])
+    sel_scen = st.multiselect("Սցենարներ", options=scenarios, default=scenarios)
+    sel_stores = st.multiselect("Խանութներ", options=stores, default=stores)
     sel_sec = st.multiselect("Բաժիններ", options=sections, default=sections)
 
 # --- 4) Apply filters once selections are made ---
-# пустой выбор = True (не фильтруем по полю)
 flt = df_all[
-    (df_all["store"].isin(sel_stores)   if sel_stores else True) &
-    (df_all["scenario"].isin(sel_scen)  if sel_scen  else True) &
-    (df_all["section"].isin(sel_sec)    if sel_sec   else True)
+    df_all["store"].isin(sel_stores)
+    & df_all["scenario"].isin(sel_scen)
+    & df_all["section"].isin(sel_sec)
 ]
 
 with st.expander("Ներդրված տվյալներ"):
@@ -358,6 +361,8 @@ if not _raw.empty and not pq.empty:
             .agg(
                 weight_in_section=("weight_in_section","first"),
                 weight_in_scenario=("weight_in_scenario","first"),
+                # NEW: нужен для Այո/Ոչ и чтобы не было KeyError
+                answer_bin=("answer_bin","first")
             )
     )
     pq = pq.merge(qw, on=["store","scenario","section","question_key"], how="left")
@@ -373,24 +378,74 @@ if not _raw.empty and not pq.empty:
 
     # вклад вопроса в итог сценария
     pq["weighted_score_pct"] = (pq["score_question_pct"] * w_frac).round(2)
-# ...existing code...
 
 tab_overview, tab_stores, tab_scen, tab_sections, tab_compare, tab_export, tab_visits = st.tabs(
     ["Ընդհանուր", "Խանութներ", "Սցենարներ", "Բաժիններ", "Համեմատել", "Արտահանում", "Այցելություններ"]  # NEW
 )
 
 with tab_overview:
-    # --- 1) Chart first ---
-    st.markdown("#### Խանութների ընդհանուր վարկանիշ")  # smaller than subheader
-    ui.rating_table(pstore.rename(columns={"score_store_pct": "score"}), "score", "Ընդհանուր ")
+    total_scores = scoring.total_score_table(flt)
+
+    if not total_scores.empty:
+        # Общая статистика ՍՎԵՐՀՈՒ
+        with st.expander("Ընդհանուր վիճակագրություն", expanded=True):
+            stores_cnt = int(total_scores["store"].nunique())
+            scen_cnt = int(flt["scenario"].nunique())
+            avg_pct = float(total_scores["total_score_pct"].mean() * 100)
+            med_pct = float(total_scores["total_score_pct"].median() * 100)
+            best_row = total_scores.iloc[total_scores["total_score_pct"].idxmax()]
+            worst_row = total_scores.iloc[total_scores["total_score_pct"].idxmin()]
+
+            # 1-я строка метрик
+            r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+            r1c1.metric("Խանութներ", stores_cnt)
+            r1c2.metric("Միջին %", f"{avg_pct:.1f}%")
+            r1c3.metric("Մեդիան %", f"{med_pct:.1f}%")
+            r1c4.metric("Սցենարներ", scen_cnt)
+
+            # 2-я строка (длинные названия помещаются лучше)
+            r2c1, r2c2 = st.columns(2)
+            r2c1.metric("Լավագույն խանութ",
+                        f"{best_row['store']} — {best_row['total_score_pct']*100:.1f}%")
+            r2c2.metric("Վատագույն խանութ",
+                        f"{worst_row['store']} — {worst_row['total_score_pct']*100:.1f}%")
+
+            scen_avgs = scoring.scenario_score_table(flt)
+            if not scen_avgs.empty:
+                scen_mean = (
+                    scen_avgs.groupby("scenario", as_index=False)
+                             .agg(avg_pct=("scenario_score_pct", "mean"))
+                             .assign(avg_pct=lambda d: d["avg_pct"].round(1))
+                             .rename(columns={"scenario": "Սցենար", "avg_pct": "Միջին %"})
+                             .sort_values("Սցենար")
+                )
+                st.markdown("**Միջին արդյունքը ըստ սցենարի (%)**")
+                # Вертикальные отдельные столбцы
+                ch = alt.Chart(scen_mean).mark_bar().encode(
+                    x=alt.X("Սցենար:N", sort=None, title="Սցենար"),
+                    y=alt.Y("Միջին %:Q", title="Միջին %", scale=alt.Scale(domain=[0, 100])),
+                    tooltip=["Սցենար", alt.Tooltip("Միջին %:Q", format=".1f")]
+                ).properties(height=320)
+                txt = ch.mark_text(baseline="bottom", dy=-4).encode(
+                    text=alt.Text("Միջին %:Q", format=".1f")
+                )
+                st.altair_chart(ch + txt, use_container_width=True)
+
+        # Далее общий рейтинг
+        st.markdown("#### Խանութների ընդհանուր վարկանիշ (Total Score)")
+        st.caption(scoring.total_score_caption_hy())
+        scores_df = total_scores.rename(columns={"total_score_pct_display": "score"})[["store", "score"]]
+        ui.rating_table(scores_df, "score", "Ընդհանուր ")
+    else:
+        st.info("Տվյալներ չկան ընդհանուր վարկանիշի համար։")
 
     st.divider()
 
-    # --- 2) Heatmap second ---
-    st.markdown("#### Բաժինների ջերմաքարտեզ")
-    ui.heatmap_sections(ps)
+    # # --- 2) Heatmap second ---
+    # st.markdown("#### Բաժինների ջերմաքարտեզ")
+    # ui.heatmap_sections(ps)
 
-    st.divider()
+    # st.divider()
 
     # --- 3) Table last ---
     if not ratings.empty:
@@ -405,7 +460,7 @@ with tab_overview:
             .reset_index(drop=True)
         )
 
-        st.markdown("#### Խանութների միջին գնահատականը (1–10)")
+        st.markdown("#### Խանութների տպավորությունը (1–10)")
         st.dataframe(avg, use_container_width=True)
     else:
         st.info("Տվյալներ չկան ցուցադրելու համար")
@@ -413,120 +468,220 @@ with tab_overview:
 
 with tab_stores:
     st.subheader("Խանութի պրոֆիլ")
-    if not pstore.empty:
-        store = st.selectbox("Ընտրեք խանութ", options=sorted(pstore["store"].unique()))
-        # --- Статистика магазина (экспандер открыт по умолчанию)
-        if not pq.empty:
-            s_pq = pq[pq["store"] == store].copy()
-            scen_summary = (
-                s_pq.groupby("scenario", as_index=False)
-                    .agg(
-                        total_weight_pct=("question_weight_pct","sum"),
-                        avg_score_pct=("score_question_pct","mean"),
-                        weighted_score_sum=("weighted_score_pct","sum")
-                    )
-            )
-            sec_summary = (
-                s_pq.groupby(["scenario","section"], as_index=False)
-                    .agg(
-                        section_weight_pct=("question_weight_pct","sum"),
-                        section_avg_score_pct=("score_question_pct","mean"),
-                        section_weighted_sum=("weighted_score_pct","sum")
-                    )
-            )
-            with st.expander("Մանրամասն վիճակագրություն խանութի մասին", expanded=True):
-                # Метрики по сценариям
-                if not scen_summary.empty:
-                    cols_m = st.columns(len(scen_summary))
-                    for i, row in scen_summary.iterrows():
-                        cols_m[i].metric(
-                            label=f"{row['scenario']} (կշռ. միավորներ)",
-                            value=f"{row['weighted_score_sum']:.1f}",
-                            delta=f"Միջ. % {row['avg_score_pct']:.1f}"
-                        )
-                    st.dataframe(
-                        scen_summary.rename(columns={
-                            "total_weight_pct":"Ընդհանուր կշիռ %",
-                            "avg_score_pct":"Միջին %",
-                            "weighted_score_sum":"Կշռ. միավորների գումար"
-                        }).round(2),
-                        use_container_width=True
-                    )
-                if not sec_summary.empty:
-                    st.markdown("**Բաժինների մանրամասն ըստ սցենարի**")
-                    st.dataframe(
-                        sec_summary.rename(columns={
-                            "section_weight_pct":"Բաժնի կշիռ %",
-                            "section_avg_score_pct":"Միջին %",
-                            "section_weighted_sum":"Կշռ. միավորների գումար"
-                        }).round(2).sort_values(["scenario","section"]),
-                        use_container_width=True
-                    )
-        ui.store_profile(ps, pq, store)
+    st.caption(scoring.caption_store_profile_hy())
+
+    # Только выбор магазина сначала
+    store_options = sorted(df_all["store"].dropna().unique()) if "store" in df_all.columns else []
+    if not store_options:
+        st.info("Խանութներ չկան ցուցադրելու համար։")
     else:
-        st.info("Տվյալներ չկան։")
-        
+        sel_store = st.selectbox("Ընտրեք խանութ", options=store_options, key="store_profile_store")
+
+        # Сценарные проценты для выбранного магазина (все сценарии сразу)
+        scen_scores_full = scoring.scenario_score_table(df_all)
+        scen_scores_store = scen_scores_full[scen_scores_full["store"] == sel_store].copy()
+        scen_scores_store = scen_scores_store.rename(columns={"scenario":"Սցենար", "scenario_score_pct":"Արդյունք %"})
+
+        st.markdown("**Սցենարների արդյունքները (% հնարավոր առավելագույնից)**")
+        if scen_scores_store.empty:
+            st.warning("Տվյալներ չկան ընտրված խանութի համար։")
+        else:
+            height = max(160, 26 * len(scen_scores_store))
+            ch1 = alt.Chart(scen_scores_store).mark_bar(size=22).encode(
+                y=alt.Y("Սցենար:N", sort='-x', title="Սցենար"),
+                x=alt.X("Արդյունք %:Q", title="Արդյունք %", scale=alt.Scale(domain=[0, 100])),
+                tooltip=["Սցենար", alt.Tooltip("Արդյունք %:Q", format=".0f")]
+            ).properties(height=height)
+            tx1 = ch1.mark_text(align="left", dx=4).encode(text=alt.Text("Արդյունք %:Q", format=".0f"))
+            st.altair_chart(ch1 + tx1, use_container_width=True)
+            st.dataframe(scen_scores_store.sort_values("Սցենար"), use_container_width=True)
+
+        st.divider()
+
+        # Теперь выбор одного сценария для детализации
+        scen_options_store = sorted(scen_scores_store["Սցենար"].unique()) if not scen_scores_store.empty else []
+        if not scen_options_store:
+            st.info("Սցենարներ չկան տվյալ խանութի համար։")
+        else:
+            sel_scen = st.selectbox("Ընտրեք սցենար մանրամասն տեսնելու համար", options=scen_options_store, key="store_profile_scen")
+
+            prof = scoring.store_profile_breakdown(df_all, sel_store, sel_scen)
+            if prof.empty:
+                st.info("Չկան հարցերի արդյունքներ այդ սցենարի համար։")
+            else:
+                sec_summary = (
+                    prof.groupby("section", as_index=False)
+                        .agg(section_score_pct=("section_score_pct","first"))
+                        .rename(columns={"section":"Բաժին", "section_score_pct":"Բաժնի արդյունք %"})
+                        .sort_values("Բաժին")
+                )
+
+                st.markdown(f"**Բաժինների արդյունքները ({sel_scen})**")
+                height2 = max(160, 26 * len(sec_summary))
+                ch2 = alt.Chart(sec_summary).mark_bar(size=22).encode(
+                    y=alt.Y("Բաժին:N", sort='-x', title="Բաժին"),
+                    x=alt.X("Բաժնի արդյունք %:Q", title="Արդյունք %", scale=alt.Scale(domain=[0, 100])),
+                    tooltip=["Բաժին", alt.Tooltip("Բաժնի արդյունք %:Q", format=".0f")]
+                ).properties(height=height2)
+                tx2 = ch2.mark_text(align="left", dx=4).encode(text=alt.Text("Բաժնի արդյունք %:Q", format=".0f"))
+                st.altair_chart(ch2 + tx2, use_container_width=True)
+                st.dataframe(sec_summary, use_container_width=True)
+
+                st.markdown(f"**Ըստ հարցերի ({sel_scen})**")
+                q_cols = prof[["section","question_key","answer","weight_share_pct","earned_pct"]].rename(columns={
+                    "section":"Բաժին",
+                    "question_key":"Հարց",
+                    "answer":"Պատասխան",
+                    "weight_share_pct":"Քաշի բաժինը %",
+                    "earned_pct":"Ստացված %"
+                }).sort_values(["Բաժին","Հարց"])
+                st.dataframe(q_cols, use_container_width=True)
+
+                scen_pct = prof["scenario_score_pct"].iloc[0]
+                col_m, col_p = st.columns([1,3])
+                with col_m:
+                    st.metric(label=f"Ընդհանուր արդյունքը ({sel_scen})", value=f"{scen_pct:.2f}%")
+                with col_p:
+                    st.progress(min(max(float(scen_pct)/100.0, 0.0), 1.0))
+
 with tab_scen:
     st.subheader("Ռեյտինգ ըստ սցենարների")
-    if not psc.empty:
-        scen = st.selectbox("Սցենար", options=sorted(psc["scenario"].unique()))
-        ui.rating_table(psc[psc["scenario"]==scen].rename(columns={"score_scenario_pct":"score"}),
-                        "score", f"{scen} — խանութների ռեյտինգ")
+    st.caption(scoring.caption_scenario_page_hy())
+
+    # Используем отфильтрованные глобально данные flt
+    scen_list = sorted(flt["scenario"].dropna().unique()) if "scenario" in flt.columns else []
+    if not scen_list:
+        st.info("Սցենարներ չկան։")
     else:
-        st.info("Տվյալներ չկան։")
+        sel_scen = st.selectbox("Սցենար", options=scen_list, key="scen_main")
+
+        # Возможные разделы для выбранного сценария
+        scen_df = flt[flt["scenario"] == sel_scen].copy()
+        scen_df["w"] = pd.to_numeric(scen_df.get("weight_in_scenario"), errors="coerce").fillna(0.0)
+        scen_df = scen_df[scen_df["w"] > 0]
+        if "question_key" in scen_df.columns:
+            scen_df = scen_df[~scoring._opinion_mask_from_key(scen_df["question_key"])]
+
+        section_opts = sorted(scen_df["section"].dropna().unique()) if "section" in scen_df.columns else []
+        section_opts_ui = ["Բոլոր բաժինները"] + section_opts
+        sel_section = st.selectbox("Բաժին (մինչև մեկ)", options=section_opts_ui, key="scen_section")
+
+        # Вопросы доступны только если выбран конкретный раздел
+        if sel_section != "Բոլոր բաժինները":
+            qdf = scen_df[scen_df["section"] == sel_section]
+            question_opts = sorted(qdf["question_key"].dropna().unique()) if "question_key" in qdf.columns else []
+            question_opts_ui = ["Բոլոր հարցերը"] + question_opts
+            sel_question = st.selectbox("Հարց (մինչև մեկ)", options=question_opts_ui, key="scen_question")
+        else:
+            sel_question = "Բոլոր հարցերը"
+
+        # Расчет
+        if sel_question != "Բոլոր հարցերը":
+            scores_subset = scoring.scenario_subset_scores(flt, sel_scen, question=sel_question)
+            label = f"Հարցի արդյունք % ({sel_question})"
+        elif sel_section != "Բոլոր բաժինները":
+            scores_subset = scoring.scenario_subset_scores(flt, sel_scen, section=sel_section)
+            label = f"Բաժնի արդյունք % ({sel_section})"
+        else:
+            scores_subset = scoring.scenario_subset_scores(flt, sel_scen)
+            label = "Սցենարի ընդհանուր %"
+
+        if scores_subset.empty:
+            st.warning("Տվյալներ չկան ընտրված ֆիլտրի համար։")
+        else:
+            # Таблица рейтинга
+            tbl = scores_subset.rename(columns={"store":"store","value_pct":label}).sort_values(label, ascending=False)
+            ui.rating_table(tbl.rename(columns={label:"score"}), "score", label)
+
+            # Гистограмма
+            ch = alt.Chart(tbl).mark_bar().encode(
+                x=alt.X("store:N", sort="-y", title="Խանութ"),
+                y=alt.Y(f"{label}:Q", title="%", scale=alt.Scale(domain=[0,100])),
+                tooltip=["store", alt.Tooltip(label, format=".1f")]
+            ).properties(height=360)
+            tx = ch.mark_text(baseline="bottom", dy=-4).encode(text=alt.Text(label, format=".0f"))
+            st.altair_chart(ch + tx, use_container_width=True)
+
+            # Детализация (если выбран раздел или вопрос)
+            if sel_question != "Բոլոր հարցերը" or sel_section != "Բոլոր բաժինները":
+                st.markdown("**Մանրամասներ ըստ խանութի (աստիճանավորված ըստ процենտա)**")
+                st.dataframe(tbl, use_container_width=True)
 
 with tab_sections:
-    st.subheader("Համեմատություն ըստ բաժինների")
+    st.subheader("Բաժինների արդյունքներ")
+    st.caption(scoring.caption_sections_page_hy())
 
-    # === Multi‑selects for scenarios & stores ===
+    # === Фильтры ===
     scen_opts = sorted(state.weights["scenario"].dropna().unique()) if not state.weights.empty else []
     sel_scenarios = st.multiselect(
-        "Սցենարներ (կշիռների համեմատության համար)",
+        "Սցենարներ",
         options=scen_opts,
         default=scen_opts,
-        key="sec_weight_scen_multi"
+        key="sec_scen_multi"
     )
 
-    store_opts = sorted(ps["store"].dropna().unique()) if not ps.empty else []
+    store_opts = sorted(df_all["store"].dropna().unique()) if not df_all.empty else []
     sel_section_stores = st.multiselect(
         "Խանութներ",
         options=store_opts,
         default=store_opts,
-        key="sec_weight_store_multi"
+        key="sec_store_multi"
     )
 
-    # === Section weights per selected scenarios ===
-    if sel_scenarios and not state.weights.empty:
-        w_sel = state.weights[state.weights["scenario"].isin(sel_scenarios)].copy()
-        if not w_sel.empty and "weight_in_scenario" in w_sel.columns:
-            sec_weights = (
-                w_sel.groupby(["scenario","section"], as_index=False)
-                     .agg(section_weight_pct=("weight_in_scenario","sum"))
-                     .assign(section_weight_pct=lambda d: (d["section_weight_pct"]*100).round(1))
-                     .sort_values(["scenario","section"])
-            )
-            st.markdown("**Կշիռներ ըստ բաժնի (ընտրված սցենարներ)**")
-            st.dataframe(sec_weights, use_container_width=True)
-        else:
-            st.info("Կշիռները չեն գտնվել ընտրված սցենարների համար։")
+    # === Результаты по разделам: процент от максимума (по выбранным сценарием/магазинам) ===
+    sec_scores = scoring.section_scores(flt, scenarios=sel_scenarios, stores=sel_section_stores)
+    if sec_scores.empty:
+        st.info("Չկան տվյալներ ընտրված ֆիլտրերով։")
     else:
-        st.info("Ընտրեք առնվազն մեկ սցենար կշիռների համար։")
+        st.markdown("**Արդյունքները ըստ բաժնի (% հնարավոր առավելագույնից)**")
+        # Добавлены столбцы магазина и сценария
+        tbl = (
+            sec_scores
+            .rename(columns={
+                "store":"Խանութ",
+                "scenario":"Սցենար",
+                "section":"Բաժին",
+                "section_pct":"Արդյունք %"
+            })
+            .sort_values(["Բաժին","Սցենար","Արդյունք %"], ascending=[True, True, False])
+        )
+        st.dataframe(tbl, use_container_width=True)
 
-    # === Questions table filtered by selected scenarios & stores ===
+    # === Հարցերի արդյունքներ (ֆիլտրացված, Այո/Ոչ) ===
     if not pq.empty and sel_scenarios and sel_section_stores:
-        pq_filtered = pq[pq["scenario"].isin(sel_scenarios) & pq["store"].isin(sel_section_stores)]
+        pq_filtered = pq[pq["scenario"].isin(sel_scenarios) & pq["store"].isin(sel_section_stores)].copy()
+
+        # EXCLUDE: «MS-ի ընդհանուր տպավորություններ» и «Ի՞նչ կարելի է անել փորձը բարելավելու համար» (и их вариации)
+        if "question_key" in pq_filtered.columns:
+            mask_opinion = scoring._opinion_mask_from_key(pq_filtered["question_key"])
+            pq_filtered = pq_filtered[~mask_opinion]
+
         if not pq_filtered.empty:
-            st.markdown("**Հարցերի արդյունքներ (ֆիլտրացված)**")
+            # Այո/Ոչ: сперва пробуем answer_bin, иначе берём score_question_pct (0/1)
+            ans = pd.to_numeric(pq_filtered.get("answer_bin"), errors="coerce")
+            if "score_question_pct" in pq_filtered.columns:
+                ans = ans.fillna(pd.to_numeric(pq_filtered["score_question_pct"], errors="coerce"))
+            pq_filtered["ans_label"] = np.where(
+                ans >= 1, "Այո",
+                np.where(ans == 0, "Ոչ", "")
+            )
+
+            st.markdown("**Հարցերի պատասխանները**")
             st.dataframe(
                 pq_filtered.sort_values(["scenario","section","store","question_key"])[
-                    ["store","scenario","section","question_key","score_question_pct"]
-                ].round(1),
+                    ["store","scenario","section","question_key","ans_label"]
+                ]
+                .rename(columns={
+                    "store":"Խանութ",
+                    "scenario":"Սցենար",
+                    "section":"Բաժին",
+                    "question_key":"Հարց",
+                    "ans_label":"Պատասխան"
+                }),
                 use_container_width=True
             )
         else:
             st.info("Չկան հարցեր տվյալ ֆիլտրերով։")
-    else:
-        st.info("Չկան տվյալներ կամ ֆիլտրերը դատարկ են։")
 
 with tab_compare:
     st.subheader("Համեմատել երկու խանութ")
@@ -639,7 +794,7 @@ with tab_visits:
             )
 # ...existing code...
 
-with st.expander("Կշիռների հաշվարկի Debug (վերահսկիչ հաշվարկ)", expanded=False):
+with st.expander("Տվյալների բազա", expanded=False):
     if not df_all.empty:
         dbg_store = st.selectbox("Խանութ (Debug)", options=sorted(df_all["store"].unique()))
         dbg_scen  = st.selectbox("Սցենար (Debug)", options=sorted(df_all["scenario"].unique()))
