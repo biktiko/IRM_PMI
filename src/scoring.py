@@ -237,7 +237,7 @@ def total_score_caption_hy() -> str:
 def scenario_score_table(df_all: pd.DataFrame) -> pd.DataFrame:
     """
     Процент выполнения по каждому сценарию для каждого магазина (0..100).
-    Учитываются только вопросы с положительным весом, 'мнение' вопросы исключены.
+    Учитываются только вопросы с положительным весом, 'մнение' вопросы исключены.
     """
     if df_all is None or df_all.empty:
         return pd.DataFrame(columns=["store","scenario","scenario_score_pct"])
@@ -261,7 +261,7 @@ def scenario_score_table(df_all: pd.DataFrame) -> pd.DataFrame:
 def store_profile_breakdown(df_all: pd.DataFrame, store: str, scenario: str) -> pd.DataFrame:
     """
     Профиль магазина по выбранному сценарию: только проценты.
-    Исключаются вопросы без веса и 'мнение' (0–10 оценка и «Ի՞նչ կարելի է անել...»).
+    Исключаются вопросы без веса и 'մнение' (0–10 оценка и «Ի՞նչ կարելի է անել...»).
     """
     cols = ["section","question_key","answer","weight_share_pct","earned_pct","section_score_pct","scenario_score_pct"]
     if df_all is None or df_all.empty:
@@ -327,6 +327,11 @@ def caption_sections_page_hy() -> str:
     return (
         "Այս բաժինը ցույց է տալիս խանութների արդյունքները ըստ բաժինների՝ որպես հավաքված միավորների "
         "տոկոս հնարավոր առավելագույնից"
+    )
+
+def caption_compare_page_hy() -> str:
+    return (
+        "Սրանով կարող եք համեմատել երկու խանութներիի արդյունքները։"
     )
 
 def section_scores(
@@ -398,3 +403,25 @@ def scenario_subset_scores(
     )
     g["value_pct"] = np.where(g["max_sum"]>0, g["gained_sum"]/g["max_sum"]*100, np.nan).round(2)
     return g[["store","value_pct"]]
+
+# Фиксированный порядок разделов
+SECTION_ORDER = [
+    "First Contact",
+    "Identification",
+    "Assessment",
+    "Product Presentation",
+    "Taste Presentation",
+    "CO meter",
+    "Objections Handling",
+    "Farewell",
+]
+
+def apply_section_order(df: pd.DataFrame, col: str = "section") -> pd.DataFrame:
+    """
+    Применяет фиксированный порядок SECTION_ORDER. Незнакомые разделы идут в конце.
+    """
+    if col in df.columns:
+        order = [s for s in SECTION_ORDER]
+        cat = pd.Categorical(df[col], categories=order, ordered=True)
+        df[col] = cat
+    return df

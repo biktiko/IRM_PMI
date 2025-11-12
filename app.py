@@ -9,6 +9,7 @@ from src.scoring import long_from_base, join_weights, aggregate_scores, extract_
 import src.scoring as scoring
 from src.utils import _parse_visit_date, pick_col, brand_theme, brand_bar_chart, _normalize_store_col
 import altair as alt
+from src import scoring
 
 def _sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
@@ -107,7 +108,7 @@ if "bases" not in state:
 alt.themes.register("brand", brand_theme)
 alt.themes.enable("brand")
 
-# Выбор источника: либо новый аплоад -> сохраняем, либо последний файл из imports
+# Выбор источника: либо новый аплоադ -> сохраняем, либо последний файл из imports
 selected_path = None
 if upl is not None:
     content = load_excel_bytes(upl.getvalue())
@@ -379,8 +380,8 @@ if not _raw.empty and not pq.empty:
     # вклад вопроса в итог сценария
     pq["weighted_score_pct"] = (pq["score_question_pct"] * w_frac).round(2)
 
-tab_overview, tab_stores, tab_scen, tab_sections, tab_compare, tab_export, tab_visits = st.tabs(
-    ["Ընդհանուր", "Խանութներ", "Սցենարներ", "Բաժիններ", "Համեմատել", "Արտահանում", "Այցելություններ"]  # NEW
+tab_overview, tab_stores, tab_scen, tab_sections, tab_compare, tab_visits = st.tabs(
+    ["Ընդհանուր", "Խանութներ", "Սցենարներ", "Բաժիններ", "Համեմատել", "Այցելություններ"]  # NEW
 )
 
 with tab_overview:
@@ -506,15 +507,22 @@ with tab_stores:
             sel_scen = st.selectbox("Ընտրեք սցենար մանրամասն տեսնելու համար", options=scen_options_store, key="store_profile_scen")
 
             prof = scoring.store_profile_breakdown(df_all, sel_store, sel_scen)
-            if prof.empty:
-                st.info("Չկան հարցերի արդյունքներ այդ սցենարի համար։")
-            else:
+            if not prof.empty:
+                # применить порядок
+                prof = scoring.apply_section_order(prof, "section")
                 sec_summary = (
                     prof.groupby("section", as_index=False)
                         .agg(section_score_pct=("section_score_pct","first"))
                         .rename(columns={"section":"Բաժին", "section_score_pct":"Բաժնի արդյունք %"})
-                        .sort_values("Բաժին")
                 )
+
+                # Сортировка по категории
+                sec_summary["Բաժին"] = pd.Categorical(
+                    sec_summary["Բաժին"],
+                    categories=scoring.SECTION_ORDER,
+                    ordered=True
+                )
+                sec_summary = sec_summary.sort_values("Բաժին")
 
                 st.markdown(f"**Բաժինների արդյունքները ({sel_scen})**")
                 height2 = max(160, 26 * len(sec_summary))
@@ -563,6 +571,11 @@ with tab_scen:
             scen_df = scen_df[~scoring._opinion_mask_from_key(scen_df["question_key"])]
 
         section_opts = sorted(scen_df["section"].dropna().unique()) if "section" in scen_df.columns else []
+        # Порядок разделов (опционально)
+        section_opts = sorted(
+            [s for s in section_opts if s in scoring.SECTION_ORDER],
+            key=lambda x: scoring.SECTION_ORDER.index(x)
+        ) + [s for s in section_opts if s not in scoring.SECTION_ORDER]
         section_opts_ui = ["Բոլոր բաժինները"] + section_opts
         sel_section = st.selectbox("Բաժին (մինչև մեկ)", options=section_opts_ui, key="scen_section")
 
@@ -633,8 +646,7 @@ with tab_sections:
     if sec_scores.empty:
         st.info("Չկան տվյալներ ընտրված ֆիլտրերով։")
     else:
-        st.markdown("**Արդյունքները ըստ բաժնի (% հնարավոր առավելագույնից)**")
-        # Добавлены столбцы магазина и сценария
+        sec_scores = scoring.apply_section_order(sec_scores, "section")
         tbl = (
             sec_scores
             .rename(columns={
@@ -643,14 +655,17 @@ with tab_sections:
                 "section":"Բաժին",
                 "section_pct":"Արդյունք %"
             })
-            .sort_values(["Բաժին","Սցենար","Արդյունք %"], ascending=[True, True, False])
         )
+        tbl["Բաժին"] = pd.Categorical(tbl["Բաժին"], categories=scoring.SECTION_ORDER, ordered=True)
+        tbl = tbl.sort_values(["Բաժին","Սցենար","Արդյունք %"], ascending=[True, True, False])
         st.dataframe(tbl, use_container_width=True)
 
-    # === Հարցերի արդյունքներ (ֆիլտրացված, Այո/Ոչ) ===
+    # Таблица вопросов (также привести порядок)
     if not pq.empty and sel_scenarios and sel_section_stores:
         pq_filtered = pq[pq["scenario"].isin(sel_scenarios) & pq["store"].isin(sel_section_stores)].copy()
-
+        if "section" in pq_filtered.columns:
+            pq_filtered = scoring.apply_section_order(pq_filtered, "section")
+            pq_filtered["section"] = pd.Categorical(pq_filtered["section"], categories=scoring.SECTION_ORDER, ordered=True)
         # EXCLUDE: «MS-ի ընդհանուր տպավորություններ» и «Ի՞նչ կարելի է անել փորձը բարելավելու համար» (и их вариации)
         if "question_key" in pq_filtered.columns:
             mask_opinion = scoring._opinion_mask_from_key(pq_filtered["question_key"])
@@ -685,114 +700,198 @@ with tab_sections:
 
 with tab_compare:
     st.subheader("Համեմատել երկու խանութ")
-    if len(stores) >= 2 and not psc.empty:
-        c1, c2 = st.columns(2)
-        with c1:
-            a = st.selectbox("Խանութ A", options=stores, index=0, key="cmp_a")
-        with c2:
-            b = st.selectbox("Խանութ B", options=stores, index=1, key="cmp_b")
-        if a and b and a != b:
-            ui.compare_two(psc, ps, a, b)
+    st.caption(scoring.caption_compare_page_hy())
+
+    stores = sorted(flt["store"].dropna().unique()) if not flt.empty else []
+    scens  = sorted(flt["scenario"].dropna().unique()) if not flt.empty else []
+
+    if len(stores) < 2:
+        st.info("Համեմատելու համար անհրաժեշտ են առնվազն երկու խանութ։")
     else:
-        st.info("Տվյալներ չկան համեմատության համար։")
+        col_a, col_b, col_s = st.columns([1,1,1.2])
+        with col_a:
+            store_a = st.selectbox("Խանութ A", options=stores, key="cmp_store_a")
+        with col_b:
+            store_b = st.selectbox("Խանութ B", options=[s for s in stores if s != store_a], key="cmp_store_b")
+        with col_s:
+            scen = st.selectbox("Սցենար", options=["Բոլոր սցենարները"] + scens, key="cmp_scen")
 
-with tab_export:
-    st.subheader("Արտահանում")
-    ui.download_buttons({
-        "per_store": pstore.round(2),
-        "per_scenario": psc.round(2),
-        "per_section": ps.round(2),
-        "per_question": pq.round(2),
-    })
+        sel_section = "Բոլոր բաժինները"
+        sel_question = "Բոլոր հարցերը"
+        if scen != "Բոլոր սցենարները":
+            base = flt[flt["scenario"] == scen].copy()
+            base["w"] = pd.to_numeric(base.get("weight_in_scenario"), errors="coerce").fillna(0.0)
+            base = base[base["w"] > 0]
+            if "question_key" in base.columns:
+                base = base[~scoring._opinion_mask_from_key(base["question_key"])]
+            sect_opts = ["Բոլոր բաժինները"] + sorted(base["section"].dropna().unique()) if "section" in base.columns else ["Բոլոր բաժինները"]
+            sel_section = st.selectbox("Բաժին", options=sect_opts, key="cmp_section")
+            if sel_section != "Բոլոր բաժինները":
+                qdf = base[base["section"] == sel_section]
+                q_opts = ["Բոլոր հարցերը"] + sorted(qdf["question_key"].dropna().unique()) if "question_key" in qdf.columns else ["Բոլոր հարցերը"]
+                sel_question = st.selectbox("Հարց", options=q_opts, key="cmp_question")
 
+        if scen == "Բոլոր սցենարները":
+            ts = scoring.total_score_table(flt)
+            pair = ts[ts["store"].isin([store_a, store_b])].copy()
+            pair["value_pct"] = (pair["total_score_pct"] * 100).round(2)
+            label = "Ընդհանուր % (բոլոր սցենարներ)"
+        else:
+            kw = {}
+            if sel_question != "Բոլոր հարցերը":
+                kw["question"] = sel_question
+            elif sel_section != "Բոլոր բաժինները":
+                kw["section"] = sel_section
+            pair = scoring.scenario_subset_scores(flt, scen, **kw)
+            pair = pair[pair["store"].isin([store_a, store_b])].copy()
+            label = (
+                f"Սցենարի % ({scen})" if not kw else
+                (f"Բաժնի % ({sel_section})" if "section" in kw else f"Հարցի % ({sel_question})")
+            )
+
+        if pair.empty or pair["store"].nunique() < 2:
+            st.warning("Տվյալներ չկան ընտրված ֆիլտրերով։")
+        else:
+            va = float(pair.loc[pair["store"] == store_a, "value_pct"].iloc[0])
+            vb = float(pair.loc[pair["store"] == store_b, "value_pct"].iloc[0])
+            mcol1, mcol2 = st.columns(2)
+            mcol1.metric(f"{store_a}", f"{va:.2f}%")
+            mcol2.metric(f"{store_b}", f"{vb:.2f}%")
+
+            chart_df = pair.rename(columns={"store":"Խանութ","value_pct":label})
+            ch = alt.Chart(chart_df).mark_bar(size=60).encode(
+                x=alt.X("Խանութ:N", sort=None),
+                y=alt.Y(f"{label}:Q", scale=alt.Scale(domain=[0,100]), title="%"),
+                color="Խանութ:N",
+                tooltip=["Խանութ", alt.Tooltip(label, format=".2f")]
+            ).properties(height=320)
+            tx = ch.mark_text(baseline="bottom", dy=-4).encode(text=alt.Text(label, format=".0f"))
+            st.altair_chart(ch + tx, use_container_width=True)
+
+            if scen != "Բոլոր սցենարները" and sel_question == "Բոլոր հարցերը":
+                sec = scoring.section_scores(flt, scenarios=[scen], stores=[store_a, store_b])
+                if sel_section != "Բոլոր բաժինները":
+                    sec = sec[sec["section"] == sel_section]
+                if not sec.empty:
+                    sec = scoring.apply_section_order(sec.copy())
+                    sec = sec.rename(columns={"store":"Խանութ","section":"Բաժին","section_pct":"Արդյունք %"})
+                    ch2 = alt.Chart(sec).mark_bar().encode(
+                        x=alt.X("Բաժին:N", title="Բաժին"),
+                        y=alt.Y("Արդյունք %:Q", scale=alt.Scale(domain=[0,100]), title="%"),
+                        color="Խանութ:N",
+                        tooltip=["Խանութ","Բաժին", alt.Tooltip("Արդյունք %:Q", format=".1f")]
+                    ).properties(height=360)
+                    st.altair_chart(ch2, use_container_width=True)
+
+# --- NEW: Visits tab restored ---
 with tab_visits:
-    st.subheader("Այցելությունների վերլուծություն")
-    if visits_df.empty and comments_df.empty:
-        st.info("Այցելությունների կամ մեկնաբանությունների տվյալներ չկան։")
+    st.subheader("Այցելություններ")
+    st.caption("Այստեղ ներկայացված են այցերի քանակը, միջին տևողությունը, ժամանակային բաշխվածությունը "
+               "և այցելողների մեկնաբանությունները։ Ֆիլտրերը կիրառվում են միայն այս բաժնում։")
+
+    if visits_df is None or visits_df.empty:
+        st.info("Այցելությունների տվյալներ չկան։")
     else:
-        if not visits_df.empty:
-            # Фильтры вертикально and без NaN
-            v_scen = st.multiselect(
-                "Սցենար(ներ)",
-                options=sorted(visits_df["scenario"].dropna().unique()),
-                default=sorted(visits_df["scenario"].dropna().unique()),
-                key="v_scen"
-            )
-            v_store = st.multiselect(
-                "Խանութ(ներ)",
-                options=sorted(visits_df["store"].dropna().unique()),
-                default=sorted(visits_df["store"].dropna().unique()),
-                key="v_store"
-            )
+        # CLEAN: убрать 'nan'/пустые магазины заранее
+        vbase = visits_df.copy()
+        s_clean = vbase["store"].astype(str).str.strip()
+        vbase = vbase[s_clean.notna() & (s_clean != "") & (s_clean.str.lower() != "nan")].copy()
 
-            # Отфильтрованные визиты + убрать NAN-строки для таблиц
-            vflt = visits_df[
-                visits_df["scenario"].isin(v_scen) & visits_df["store"].isin(v_store)
-            ].dropna(subset=["store","scenario","visit_duration_min"], how="any")
+        # Фильтры (только для этой страницы)
+        v_stores = sorted(vbase["store"].dropna().unique().tolist())
+        v_scens = sorted(vbase["scenario"].dropna().unique().tolist())
+        with st.expander("Ֆիլտրեր (Այցելություններ)", expanded=True):
+            f_scens = st.multiselect("Սցենարներ", options=v_scens, default=v_scens, key="vis_scen")
+            f_stores = st.multiselect("Խանութներ", options=v_stores, default=v_stores, key="vis_store")
+            max_dur = st.slider("Մակս. տևողություն (րոպե) — հեռացնել ծայրահեղ արժեքները",
+                                min_value=30, max_value=180, value=60, step=5)
 
-            # Кол-во визитов и средняя длительность по магазину и сценарию
-            agg = (vflt.groupby(["store","scenario"], as_index=False)
-                        .agg(visits=("visit_duration_min","count"),
-                             avg_duration_min=("visit_duration_min","mean"))
-                        .assign(avg_duration_min=lambda d: d["avg_duration_min"].round(1)))
-            st.markdown("**Միջին տևողություն և այցելությունների թվաքանակ**")
-            st.dataframe(agg.sort_values(["scenario","store"]), use_container_width=True)
+        vflt = vbase[vbase["scenario"].isin(f_scens) & vbase["store"].isin(f_stores)].copy()
+        vflt["visit_duration_min"] = pd.to_numeric(vflt["visit_duration_min"], errors="coerce")
 
-            # Кол-во визитов по магазину (все сценарии)
-            agg_store = (visits_df[visits_df["store"].isin(v_store)]
-                            .dropna(subset=["store"])
-                            .groupby("store", as_index=False)
-                            .agg(visits=("visit_duration_min","count")))
-            st.markdown("**Այցելությունները ըստ խանութների (բոլորև սցենարներով)**")
-            st.dataframe(agg_store.sort_values("store"), use_container_width=True)
+        # FILTER: исключить явные выбросы по длительности
+        before_len = len(vflt)
+        vflt = vflt[(vflt["visit_duration_min"].isna()) | ((vflt["visit_duration_min"] >= 0) & (vflt["visit_duration_min"] <= max_dur))]
+        removed_outliers = before_len - len(vflt)
+        if removed_outliers > 0:
+            st.caption(f"Ցուցադրման համար հեռացվել է {removed_outliers} այց, որոնց տևողությունը > {max_dur} րոպե (հավանաբար սխալ գրառում).")
 
-            # Блок распределения по времени суток
-            dist = (vflt.groupby(["scenario","time_of_day"], as_index=False)
-                          .size()
-                          .rename(columns={"size":"visits"}))
-            st.markdown("**Այցելումները ըստ օրվա մասերի**")
-            st.dataframe(
-                dist.pivot(index="time_of_day", columns="scenario", values="visits").fillna(0).astype(int),
-                use_container_width=True
-            )
+        # Tоп-метрики
+        total_visits = int(len(vflt))
+        avg_dur = float(vflt["visit_duration_min"].mean()) if total_visits else 0.0
+        c1, c2 = st.columns(2)
+        c1.metric("Այցելությունների քանակ", total_visits)
+        c2.metric("Միջին տևողություն (րոպե)", f"{avg_dur:.0f}")
 
-            # Список визитов (формат dd.mm.yyyy hh:mm) и без NaN-строк
-            lst = (vflt.dropna(subset=["visit_start","visit_end"])
-                        .sort_values(["store","scenario","visit_start"])
-                        .loc[:, ["store","scenario","visit_start","visit_end","visit_duration_min","time_of_day"]]
-                        .assign(
-                            visit_start=lambda d: d["visit_start"].dt.strftime("%d.%m.%Y %H:%M"),
-                            visit_end=lambda d: d["visit_end"].dt.strftime("%d.%m.%Y %H:%M"),
-                            visit_duration_min=lambda d: d["visit_duration_min"].round(1)
-                        ))
-            st.markdown("**Այցելումների ժամերն ու տևողությունները**")
-            st.dataframe(lst, use_container_width=True)
+        # 1) Միջին տևողություն և այցելությունների թվաքանակ
+        st.markdown("### Միջին տևողություն և այցելությունների թվաքանակ")
+        agg = (
+            vflt.groupby(["store","scenario"], as_index=False)
+                .agg(visits=("store","count"), avg_duration_min=("visit_duration_min","mean"))
+        )
+        agg["avg_duration_min"] = agg["avg_duration_min"].round(0).astype("Int64")
+        st.dataframe(agg.sort_values(["store","scenario"]), use_container_width=True)
 
-        st.divider()
+        # 2) Այցելությունները ըստ խանութների (բոլոր սցենարներով)
+        st.markdown("### Այցելությունները ըստ խանութների (բոլոր սցենարներով)")
+        by_store = vflt.groupby("store", as_index=False).size().rename(columns={"size":"visits"})
+        st.dataframe(by_store.sort_values("visits", ascending=False), use_container_width=True)
 
-        if not comments_df.empty:
-            c_scen = st.multiselect(
-                "Սցենար(ներ) (մեկնաբանություններ)",
-                options=sorted(comments_df["scenario"].dropna().unique()),
-                default=sorted(comments_df["scenario"].dropna().unique()),
-                key="c_scen"
-            )
-            c_store = st.multiselect(
-                "Խանուտ(ներ) (մեկնաբանություններ)",
-                options=sorted(comments_df["store"].dropna().unique()),
-                default=sorted(comments_df["store"].dropna().unique()),
-                key="c_store"
-            )
-            cflt = comments_df[
-                comments_df["scenario"].isin(c_scen) & comments_df["store"].isin(c_store)
-            ].dropna(subset=["store","text"])
+        h = max(240, 24 * len(by_store))
+        ch_store = alt.Chart(by_store).mark_bar(size=20).encode(
+            y=alt.Y("store:N", sort='-x', title="Խանութ"),
+            x=alt.X("visits:Q", title="Այցելությունների քանակ"),
+            tooltip=["store","visits"]
+        ).properties(height=h)
+        st.altair_chart(ch_store, use_container_width=True)
 
-            st.markdown("**Այցելողների մեկնաբանությունները**")
-            st.dataframe(
-                cflt.sort_values(["type","store","scenario"])[["store","scenario","type","text"]],
-                use_container_width=True
-            )
-# ...existing code...
+        # 3) Այցելումները ըստ օրվա մասերի
+        st.markdown("### Այցելումները ըստ օրվա մասերի")
+        tod = (
+            vflt.groupby(["time_of_day","scenario"], as_index=False)
+                .size().rename(columns={"size":"visits"})
+        )
+        order_tod = ["Morning","Day","Evening","Night","Unknown"]
+        tod["time_of_day"] = pd.Categorical(tod["time_of_day"], categories=order_tod, ordered=True)
+        st.dataframe(
+            tod.pivot_table(index="time_of_day", columns="scenario", values="visits", fill_value=0),
+            use_container_width=True
+        )
+
+        ch_tod = alt.Chart(tod).mark_bar().encode(
+            x=alt.X("time_of_day:N", title="Օրվա մաս"),
+            y=alt.Y("visits:Q", title="Այցելություններ"),
+            color=alt.Color("scenario:N", title="Սցենար"),
+            tooltip=["time_of_day","scenario","visits"]
+        ).properties(height=320)
+        st.altair_chart(ch_tod, use_container_width=True)
+
+        # 4) Այցելումների ժամերն ու տևողությունները
+        st.markdown("### Այցելումների ժամերն ու տևողությունները")
+        cols = ["store","scenario","visit_start","visit_end","visit_duration_min","time_of_day"]
+        st.dataframe(vflt[cols].sort_values(["store","scenario","visit_start"]), use_container_width=True)
+
+        if vflt["visit_start"].notna().any():
+            ch_scatter = alt.Chart(vflt).mark_circle(size=80, opacity=0.7).encode(
+                x=alt.X("visit_start:T", title="Սկիզբ"),
+                y=alt.Y("visit_duration_min:Q", title="Տևողություն (րոպե)", scale=alt.Scale(domain=[0, max_dur])),
+                color=alt.Color("scenario:N", title="Սցենար"),
+                tooltip=["store","scenario","visit_start","visit_end",
+                         alt.Tooltip("visit_duration_min:Q", format=".0f")]
+            ).properties(height=320)
+            st.altair_chart(ch_scatter, use_container_width=True)
+
+    # 5) Այցելողների մեկնաբանությունները
+    st.markdown("### Այցելողների մեկնաբանությունները")
+    if comments_df is None or comments_df.empty:
+        st.info("Մեկնաբանություններ չկան։")
+    else:
+        cflt = comments_df.copy()
+        s_clean_c = cflt["store"].astype(str).str.strip()
+        cflt = cflt[s_clean_c.notna() & (s_clean_c != "") & (s_clean_c.str.lower() != "nan")]
+        if 'scenario' in cflt and 'store' in cflt:
+            cflt = cflt[cflt["scenario"].isin(f_scens) & cflt["store"].isin(f_stores)]
+        st.dataframe(cflt.sort_values(["store","scenario"]), use_container_width=True)
 
 with st.expander("Տվյալների բազա", expanded=False):
     if not df_all.empty:
