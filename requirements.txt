@@ -5,4 +5,7 @@ pyarrow
 openpyxl
 xlrd
 plotly
-
+supabase
+gspread
+google-auth
+google-api-python-client
