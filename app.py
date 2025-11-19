@@ -10,7 +10,11 @@ import src.scoring as scoring
 from src.utils import _parse_visit_date, pick_col, brand_theme, brand_bar_chart, _normalize_store_col
 import altair as alt
 from src import scoring
-from src.supabase import _sb_client, get_latest_excel
+# NEW — для аудио/Supabase
+import uuid, mimetypes
+from datetime import datetime
+from src.supabase import _sb_client, _sb_public_url, _sb_upload, _sb_list_all, _sb_delete, get_latest_excel
+from src.audio_ui import render_audio_tab
 
 def _sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
@@ -147,7 +151,6 @@ else:
     else:
         st.sidebar.error(f"Supabase: ֆայլ չի գտնվել '{DATA_BUCKET}' բաժնում")
 
-# Если выбран файл и он изменился — перечитать базы и веса
 # Если выбран файл и он изменился — перечитать базы и веса
 if selected_path is not None and state.get("last_file") != str(selected_path):
     bases_raw, weights_raw = read_excel_all(str(selected_path))
@@ -403,8 +406,8 @@ if not _raw.empty and not pq.empty:
     # вклад вопроса в итог сценария
     pq["weighted_score_pct"] = (pq["score_question_pct"] * w_frac).round(2)
 
-tab_overview, tab_stores, tab_scen, tab_sections, tab_compare, tab_visits = st.tabs(
-    ["Ընդհանուր", "Խանութներ", "Սցենարներ", "Բաժիններ", "Համեմատել", "Այցելություններ"]  # NEW
+tab_overview, tab_stores, tab_scen, tab_sections, tab_compare, tab_visits, tab_audio = st.tabs(
+    ["Ընդհանուր", "Խանութներ", "Սցենարներ", "Բաժիններ", "Համեմատել", "Այցելություններ", "Աուդիո"]
 )
 
 with tab_overview:
@@ -936,5 +939,14 @@ with st.expander("Տվյալների բազա", expanded=False):
             scen_calc = dbg_rows["scenario_calc_pct"].dropna().unique()
             if scen_calc.size:
                 st.info(f"Սցենարի վերահաշվարկված տոկոսը: {scen_calc[0]:.2f}%")
+
+# --- NEW: Աուդիո ---
+with tab_audio:
+    st.subheader("Աուդիո ֆայլեր")
+    st.caption("Բեռնեք, լսեք, խմբագրեք վերնագիրը/նկարագրությունը և ջնջեք ըստ անհրաժեշտության։")
+    sb, BUCKET = _sb_client()
+    if sb is None:
+        st.stop()
+    render_audio_tab(sb, BUCKET)
 
 st.caption("© Դաշբորդ — հաշվարկը հիմնված է «Այո» պատասխանների կշռած բաժնին։ LAS/YAP կշիռները կիրառվում են բաժնի (E) և սցենարի (F) մակարդակներում։")
