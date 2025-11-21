@@ -13,7 +13,7 @@ from src import scoring
 # NEW — для аудио/Supabase
 import uuid, mimetypes
 from datetime import datetime
-from src.supabase import _sb_client, _sb_public_url, _sb_upload, _sb_list_all, _sb_delete, get_latest_excel
+from src.supabase import _sb_client, _sb_public_url, _sb_upload, _sb_list_all, _sb_delete, get_latest_excel, replace_excel_file
 from src.audio_ui import render_audio_tab
 
 def _sha256(s: str) -> str:
@@ -120,6 +120,21 @@ sb_client, _ = _sb_client()
 if st.sidebar.button("🔄 Թարմացնել (Supabase)"):
     st.cache_data.clear()
     st.rerun()
+
+with st.sidebar.expander("Վերբեռնել նոր Excel (Supabase)"):
+    st.warning("Ուշադրություն. Նոր ֆայլը կփոխարինի հինը (միշտ մնում է 1 ֆայլ):")
+    upl_file = st.file_uploader("Ընտրեք .xlsx/.xls", type=["xlsx", "xls"], key="sb_upl_new")
+    if upl_file:
+        if st.button("Հաստատել և ուղարկել", type="primary"):
+            if not sb_client:
+                st.error("Supabase client-ը հասանելի չէ:")
+            else:
+                with st.spinner("Բեռնում ենք Supabase..."):
+                    res = replace_excel_file(sb_client, DATA_BUCKET, upl_file)
+                    if res:
+                        st.success("Հաջողվեց!")
+                        st.cache_data.clear()
+                        st.rerun()
 
 @st.cache_data(show_spinner="Загрузка данных из Supabase...", ttl=3600)
 def load_remote_excel():

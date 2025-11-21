@@ -222,3 +222,55 @@ def get_latest_excel(sb, bucket: str) -> tuple[bytes, str]:
     except Exception as e:
         st.error(f"Ошибка при загрузке Excel из Supabase: {e}")
         return None, None
+
+def replace_excel_file(sb, bucket: str, file_obj) -> bool:
+    """
+    Загружает новый Excel файл и удаляет все старые, чтобы остался ровно один.
+    """
+    try:
+        # 1. Подготовка
+        filename = file_obj.name
+        # Простая санитарная обработка имени
+        filename = filename.replace(" ", "_")
+        
+        data = file_obj.getvalue()
+        # mime type
+        mime = file_obj.type
+        if not mime:
+            if filename.lower().endswith(".xlsx"):
+                mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            elif filename.lower().endswith(".xls"):
+                mime = "application/vnd.ms-excel"
+            else:
+                mime = "application/octet-stream"
+
+        # 2. Загрузка нового файла (upsert=true)
+        _sb_upload(sb, bucket, filename, data, mime)
+        
+        # 3. Удаление старых файлов (всех Excel, кроме только что загруженного)
+        # Используем _sb_list_all чтобы найти все файлы
+        all_files = _sb_list_all(sb, bucket)
+        to_delete = []
+        for f in all_files:
+            # _sb_list_all возвращает dict с ключом "name" (или full_path в нашей реализации)
+            # В нашей реализации _sb_list_all возвращает плоский список, где name - это имя файла, 
+            # а full_path - полный путь.
+            # Но если bucket плоский, name достаточно.
+            # Важно: Supabase storage list возвращает имена.
+            
+            fname = f.get("name")
+            # Если это тот же файл, что мы только что загрузили — пропускаем
+            if fname == filename:
+                continue
+                
+            # Если это Excel — в список на удаление
+            if fname and fname.lower().endswith((".xlsx", ".xls")):
+                to_delete.append(fname)
+        
+        if to_delete:
+            _sb_delete(sb, bucket, to_delete)
+            
+        return True
+    except Exception as e:
+        st.error(f"Ошибка при замене файла: {e}")
+        return False
