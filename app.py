@@ -194,6 +194,15 @@ with st.container():  # скрытый պատրաստողական բլոկ առ�
         # comment: filter base by scenario
         df_scene = scoring.filter_by_scenario_column(base, scen)
 
+        # NEW: detect employee and stage columns
+        emp_col_orig = pick_col(df_scene, keys=["ԳԳ Անուն Ազգանուն", "Employee", "Worker"])
+        stage_col_orig = pick_col(df_scene, keys=["Փուլ", "Stage", "Phase"])
+        
+        if emp_col_orig:
+            df_scene = df_scene.rename(columns={emp_col_orig: "employee"})
+        if stage_col_orig:
+            df_scene = df_scene.rename(columns={stage_col_orig: "stage"})
+
         # comment: small header (no huge H2)
         # st.markdown(f"<h4>{scen} սցենարի մշակումը</h4>", unsafe_allow_html=True)
 
@@ -220,7 +229,15 @@ with st.container():  # скрытый պատրաստողական բլոկ առ�
 
         # comment: prepare long form for scoring
         drop_list = [c for c in skip_cols if c in df_scene.columns and c != store_col]
+        # Ensure we don't drop the new columns if they were caught in skip_cols
+        if "employee" in drop_list: drop_list.remove("employee")
+        if "stage" in drop_list: drop_list.remove("stage")
+
         df_for_long = df_scene.drop(columns=drop_list, errors="ignore")
+
+        extra_ids = []
+        if "employee" in df_for_long.columns: extra_ids.append("employee")
+        if "stage" in df_for_long.columns: extra_ids.append("stage")
 
         long_df = long_from_base(
             df_for_long,
@@ -228,6 +245,7 @@ with st.container():  # скрытый պատրաստողական բլոկ առ�
             non_question_cols=skip_cols,
             scenario=scen,
             qkeys_norm=qkeys,
+            extra_id_cols=extra_ids
         )
 
         # comment: collect ratings per scenario
@@ -371,12 +389,24 @@ with st.expander("Ֆիլտրեր", expanded=False):
     sel_stores = st.multiselect("Խանութներ", options=stores, default=stores)
     sel_sec = st.multiselect("Բաժիններ", options=sections, default=sections)
 
+    employees = sorted(df_all["employee"].dropna().unique().tolist()) if "employee" in df_all.columns else []
+    stages = sorted(df_all["stage"].dropna().unique().tolist()) if "stage" in df_all.columns else []
+
+    sel_emp = st.multiselect("Աշխատակիցներ", options=employees, default=[]) if employees else []
+    sel_stage = st.multiselect("Փուլեր", options=stages, default=stages) if stages else []
+
 # --- 4) Apply filters once selections are made ---
-flt = df_all[
+mask = (
     df_all["store"].isin(sel_stores)
     & df_all["scenario"].isin(sel_scen)
     & df_all["section"].isin(sel_sec)
-]
+)
+if employees and sel_emp:
+    mask &= df_all["employee"].isin(sel_emp)
+if stages:
+    mask &= df_all["stage"].isin(sel_stage)
+
+flt = df_all[mask]
 
 with st.expander("Ներդրված տվյալներ"):
 

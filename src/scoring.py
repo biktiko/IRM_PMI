@@ -14,10 +14,14 @@ def filter_by_scenario_column(df: pd.DataFrame, scen: str) -> pd.DataFrame:
         return df[df[col].astype(str).str.contains(scen, case=False, na=False)]
     return df
 
-def long_from_base(df: pd.DataFrame, store_col: str, non_question_cols: list, scenario: str, qkeys_norm: list) -> pd.DataFrame:
+def long_from_base(df: pd.DataFrame, store_col: str, non_question_cols: list, scenario: str, qkeys_norm: list, extra_id_cols: list = None) -> pd.DataFrame:
     norm_map = {c: norm(c) for c in df.columns}
     cols = [c for c,nc in norm_map.items() if nc in qkeys_norm]
     id_cols = [store_col] if store_col in df.columns else []
+    if extra_id_cols:
+        for ec in extra_id_cols:
+            if ec in df.columns and ec not in id_cols:
+                id_cols.append(ec)
     long_df = df.melt(id_vars=id_cols, value_vars=cols, var_name="question_key", value_name="answer_raw")
     long_df = long_df.rename(columns={store_col:"store"})
     long_df["scenario"] = scenario
