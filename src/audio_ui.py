@@ -43,6 +43,31 @@ def _parse_iso(ts: str | None) -> datetime | None:
     except Exception:
         return None
 
+def _get_stage_and_category(title: str):
+    title = title.strip()
+    stage = None
+    category = None
+    
+    # Stage 1
+    if title.startswith("BR"):
+        stage = "1ին փուլ"
+        for cat in ["BR1", "BR2", "BR3", "BR4", "BR5"]:
+            if title.startswith(cat):
+                category = cat
+                break
+            
+    # Stage 2
+    else:
+        # Stage 2 prefixes (sorted by length desc)
+        stage2_cats = ["LAS_SFP&CC", "LAS_SA", "LAS_SFP", "HS_YAP", "SA_YAP"]
+        for cat in stage2_cats:
+            if title.startswith(cat):
+                stage = "2րդ փուլ"
+                category = cat
+                break
+                
+    return stage, category
+
 def render_audio_tab(sb, bucket: str):
     st.markdown("""
     <style>
@@ -121,6 +146,7 @@ def render_audio_tab(sb, bucket: str):
             upd = f.get("updated_at")
             saved_dt = _parse_iso(upd) or datetime.utcnow()
         size = (f.get("metadata") or {}).get("size")
+        stg, cat = _get_stage_and_category(meta["title"])
         records.append({
             "path": path,
             "filename": filename,
@@ -128,13 +154,29 @@ def render_audio_tab(sb, bucket: str):
             "description": meta["description"],
             "saved_dt": saved_dt,
             "size": size,
-            "updated_at": f.get("updated_at")
+            "updated_at": f.get("updated_at"),
+            "stage": stg,
+            "category": cat
         })
 
     # Панель поиска + фильтр по дате
-    col_s, col_d1, col_d2 = st.columns([2, 1, 1])
-    with col_s:
-        q = st.text_input("Փնտրել ըստ վերնագրի կամ անվանման", "", key="audio_search")
+    st.markdown("### Ֆիլտրեր")
+    q = st.text_input("Փնտրել ըստ վերնագրի կամ անվանման", "", key="audio_search")
+    
+    col_stg, col_cat, col_d1, col_d2 = st.columns(4)
+    with col_stg:
+        stage_options = ["Բոլորը", "1ին փուլ", "2րդ փուլ"]
+        selected_stage = st.selectbox("Փուլ", stage_options, key="filter_stage")
+    with col_cat:
+        cat_options = ["Բոլորը"]
+        if selected_stage == "1ին փուլ":
+            cat_options += ["BR1", "BR2", "BR3", "BR4", "BR5"]
+        elif selected_stage == "2րդ փուլ":
+            cat_options += ["LAS_SA", "LAS_SFP", "LAS_SFP&CC", "HS_YAP", "SA_YAP"]
+        else:
+            cat_options += ["BR1", "BR2", "BR3", "BR4", "BR5", "LAS_SA", "LAS_SFP", "LAS_SFP&CC", "HS_YAP", "SA_YAP"]
+            
+        selected_category = st.selectbox("Կատեգորիա", cat_options, key="filter_category")
     min_dt = min(r["saved_dt"].date() for r in records)
     max_dt = max(r["saved_dt"].date() for r in records)
     with col_d1:
@@ -143,6 +185,10 @@ def render_audio_tab(sb, bucket: str):
         to_date = st.date_input("Վերջ", value=max_dt, min_value=min_dt, max_value=max_dt, key="audio_to")
 
     def _pass_filters(r):
+        if selected_stage != "Բոլորը" and r["stage"] != selected_stage:
+            return False
+        if selected_category != "Բոլորը" and r["category"] != selected_category:
+            return False
         if q:
             if q.lower() not in r["title"].lower() and q.lower() not in r["filename"].lower():
                 return False
@@ -150,6 +196,7 @@ def render_audio_tab(sb, bucket: str):
         return (from_date <= d <= to_date)
 
     view = [r for r in records if _pass_filters(r)]
+    st.caption(f"Ցուցադրված է {len(view)} / {len(records)} աուդիո")
     if not view:
         st.info("Ոչինչ չի գտնվել ըստ ֆիլտրերի։")
         return
