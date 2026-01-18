@@ -68,6 +68,53 @@ def _get_stage_and_category(title: str):
                 
     return stage, category
 
+@st.cache_data(show_spinner="Բեռնում ենք աուդիո ցուցակը...", ttl=3600)
+def _fetch_audio_records(_sb, bucket: str):
+    # Листинг только аудио
+    raw_files = _sb_list_all(_sb, bucket)
+    items = []
+    for f in raw_files:
+        path = f.get("full_path") or ""
+        name = Path(path).name
+        if not path or name.startswith("."):
+            continue
+        if Path(name).suffix.lower() not in AUDIO_EXTS:
+            continue
+        items.append(f)
+
+    if not items:
+        return []
+
+    # Сначала соберём записи с метаданными
+    records = []
+    for f in items:
+        path = f.get("full_path")
+        filename = Path(path).name
+        meta = _load_meta(_sb, bucket, path, default_title=filename)
+        saved_dt = _parse_iso(meta.get("saved_at"))
+        # fallback: updated_at из storage (UTC)
+        if saved_dt is None:
+            upd = f.get("updated_at")
+            saved_dt = _parse_iso(upd) or datetime.utcnow()
+        size = (f.get("metadata") or {}).get("size")
+        stg, cat = _get_stage_and_category(meta["title"])
+        records.append({
+            "path": path,
+            "filename": filename,
+            "title": meta["title"],
+            "description": meta["description"],
+            "saved_dt": saved_dt,
+            "size": size,
+            "updated_at": f.get("updated_at"),
+            "stage": stg,
+            "category": cat
+        })
+    
+    # Сортировка по дате добавления (новые сверху)
+    records.sort(key=lambda r: r["saved_dt"], reverse=True)
+    return records
+
+@st.fragment
 def render_audio_tab(sb, bucket: str):
     st.markdown("""
     <style>
@@ -112,52 +159,22 @@ def render_audio_tab(sb, bucket: str):
                 _sb_upload(sb, bucket, path, raw, mime)  # аудио
                 _save_meta(sb, bucket, path, title_in or Path(safe).stem, desc_in or "")  # sidecar JSON с saved_at
                 st.success("Բեռնվել է")
+                _fetch_audio_records.clear() # Clear cache
                 st.rerun()
             except Exception as e:
                 st.error(f"Չստացվեց վերբեռնել: {e}")
 
     st.markdown("#### Ֆայլերի ցուցակ")
+    
+    if st.button("🔄 Թարմացնել ցուցակը"):
+        _fetch_audio_records.clear()
+        st.rerun()
 
-    # Листинг только аудио
-    raw_files = _sb_list_all(sb, bucket)
-    items = []
-    for f in raw_files:
-        path = f.get("full_path") or ""
-        name = Path(path).name
-        if not path or name.startswith("."):
-            continue
-        if Path(name).suffix.lower() not in AUDIO_EXTS:
-            continue
-        items.append(f)
+    records = _fetch_audio_records(sb, bucket)
 
-    if not items:
+    if not records:
         st.info("Ֆայլեր դեռ չկան։")
         return
-
-    # Сначала соберём записи с метаданными, чтобы отфильтровать по дате
-    records = []
-    for f in items:
-        path = f.get("full_path")
-        filename = Path(path).name
-        meta = _load_meta(sb, bucket, path, default_title=filename)
-        saved_dt = _parse_iso(meta.get("saved_at"))
-        # fallback: updated_at из storage (UTC)
-        if saved_dt is None:
-            upd = f.get("updated_at")
-            saved_dt = _parse_iso(upd) or datetime.utcnow()
-        size = (f.get("metadata") or {}).get("size")
-        stg, cat = _get_stage_and_category(meta["title"])
-        records.append({
-            "path": path,
-            "filename": filename,
-            "title": meta["title"],
-            "description": meta["description"],
-            "saved_dt": saved_dt,
-            "size": size,
-            "updated_at": f.get("updated_at"),
-            "stage": stg,
-            "category": cat
-        })
 
     # Панель поиска + фильтр по дате
     st.markdown("### Ֆիլտրեր")
@@ -177,12 +194,35 @@ def render_audio_tab(sb, bucket: str):
             cat_options += ["BR1", "BR2", "BR3", "BR4", "BR5", "LAS_SA", "LAS_SFP", "LAS_SFP&CC", "HS_YAP", "SA_YAP"]
             
         selected_category = st.selectbox("Կատեգորիա", cat_options, key="filter_category")
-    min_dt = min(r["saved_dt"].date() for r in records)
-    max_dt = max(r["saved_dt"].date() for r in records)
+    
+    if records:
+        min_dt = min(r["saved_dt"].date() for r in records)
+        max_dt = max(r["saved_dt"].date() for r in records)
+    else:
+        min_dt = date.today()
+        max_dt = date.today()
+
     with col_d1:
         from_date = st.date_input("Սկիզբ", value=min_dt, min_value=min_dt, max_value=max_dt, key="audio_from")
     with col_d2:
         to_date = st.date_input("Վերջ", value=max_dt, min_value=min_dt, max_value=max_dt, key="audio_to")
+
+    # Detect filter changes and reset page
+    current_filters = {
+        "q": q,
+        "stage": selected_stage,
+        "category": selected_category,
+        "from": from_date,
+        "to": to_date
+    }
+    
+    if "audio_filters_prev" not in st.session_state:
+        st.session_state["audio_filters_prev"] = current_filters
+    
+    if st.session_state["audio_filters_prev"] != current_filters:
+        st.session_state["audio_page"] = 1
+        st.session_state["audio_filters_prev"] = current_filters
+        # No need to rerun here, just setting page to 1 is enough for the current render
 
     def _pass_filters(r):
         if selected_stage != "Բոլորը" and r["stage"] != selected_stage:
@@ -196,20 +236,55 @@ def render_audio_tab(sb, bucket: str):
         return (from_date <= d <= to_date)
 
     view = [r for r in records if _pass_filters(r)]
-    st.caption(f"Ցուցադրված է {len(view)} / {len(records)} աուդիո")
+    
     if not view:
         st.info("Ոչինչ չի գտնվել ըստ ֆիլտրերի։")
         return
 
-    # Сортировка по дате добавления (новые сверху)
-    view.sort(key=lambda r: r["saved_dt"], reverse=True)
+    # Pagination
+    PAGE_SIZE = 5
+    total_items = len(view)
+    total_pages = (total_items + PAGE_SIZE - 1) // PAGE_SIZE
+    
+    # Reset page if out of bounds
+    if "audio_page" not in st.session_state:
+        st.session_state["audio_page"] = 1
+    
+    # Ensure valid page
+    if total_pages > 0 and st.session_state["audio_page"] > total_pages:
+        st.session_state["audio_page"] = total_pages
+    elif total_pages == 0:
+        st.session_state["audio_page"] = 1
+    
+    current_page = st.session_state["audio_page"]
 
-    for r in view:
+    # Controls
+    col_prev, col_info, col_next = st.columns([1, 2, 1])
+    with col_prev:
+        if current_page > 1:
+            if st.button("◀ Նախորդ", key="audio_prev"):
+                st.session_state["audio_page"] -= 1
+                st.rerun()
+    with col_next:
+        if current_page < total_pages:
+            if st.button("Հաջորդ ▶", key="audio_next"):
+                st.session_state["audio_page"] += 1
+                st.rerun()
+    with col_info:
+        st.markdown(f"<div style='text-align: center; margin-top: 5px;'>Էջ {current_page} / {total_pages}</div>", unsafe_allow_html=True)
+
+    start_idx = (current_page - 1) * PAGE_SIZE
+    end_idx = start_idx + PAGE_SIZE
+    page_view = view[start_idx:end_idx]
+    
+    st.caption(f"Ցուցադրված է {start_idx + 1}-{min(end_idx, total_items)} / {total_items} աուդիո (Ընդհանուր: {len(records)})")
+
+    for r in page_view:
         path = r["path"]
         filename = r["filename"]
         title = r["title"]
         desc = r["description"]
-        size_kb = f"{int(r['size'])//1024} KB" if isinstance(r["size"], (int, float)) else ""
+        size_kb = f"{int(r['size'])//1024} KB" if isinstance(r['size'], (int, float)) else ""
         added_human = r["saved_dt"].strftime("%Y-%m-%d %H:%M UTC")
         url = _sb_public_url(sb, bucket, path)
 
@@ -232,6 +307,7 @@ def render_audio_tab(sb, bucket: str):
             if st.button("🗑️ Ջնջել", key=f"del_{path}"):
                 if _sb_delete(sb, bucket, [path, _sidecar(path)]):
                     st.success("Ջնջված է")
+                    _fetch_audio_records.clear()
                     st.rerun()
         with act_c2:
             with st.expander("Խմբագրել", expanded=False):
@@ -241,6 +317,7 @@ def render_audio_tab(sb, bucket: str):
                     try:
                         _save_meta(sb, bucket, path, new_title.strip(), new_desc.strip())
                         st.success("Պահպանված է")
+                        _fetch_audio_records.clear()
                         st.rerun()
                     except Exception as e:
                         st.error(f"Չստացվեց պահել: {e}")
