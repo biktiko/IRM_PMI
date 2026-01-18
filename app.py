@@ -195,7 +195,7 @@ with st.container():  # скрытый պատրաստողական բլոկ առ�
         df_scene = scoring.filter_by_scenario_column(base, scen)
 
         # NEW: detect employee and stage columns
-        emp_col_orig = pick_col(df_scene, keys=["ԳԳ Անուն Ազգանուն", "Employee", "Worker"])
+        emp_col_orig = pick_col(df_scene, keys=["SE Անուն/ազգանուն", "Employee", "Worker"])
         stage_col_orig = pick_col(df_scene, keys=["Փուլ", "Stage", "Phase"])
         
         if emp_col_orig:
