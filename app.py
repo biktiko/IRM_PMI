@@ -1,4 +1,5 @@
 import streamlit as st
+import re
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -13,7 +14,7 @@ from src import scoring
 # NEW — для аудио/Supabase
 import uuid, mimetypes
 from datetime import datetime
-from src.supabase import _sb_client, _sb_public_url, _sb_upload, _sb_list_all, _sb_delete, get_latest_excel, replace_excel_file
+from src.supabase import _sb_client, _sb_public_url, _sb_upload, _sb_list_all, _sb_delete, replace_excel_file
 from src.audio_ui import render_audio_tab
 
 def _sha256(s: str) -> str:
@@ -59,10 +60,8 @@ def _check_password(inp: str) -> bool:
 st.set_page_config(page_title="Վաճառքի կետերի գնահատման դաշբորդ", layout="wide")
 
 # --- AUTH ---
-if st.sidebar.button("Logout", disabled=not st.session_state.get("auth_ok")):
-    for k in ("auth_ok","auth_user"):
-        st.session_state.pop(k, None)
-    st.rerun()
+# Logout moved to bottom of sidebar
+
 
 if not st.session_state.get("auth_ok"):
     st.title("Մուտք համակարգ")
@@ -117,12 +116,11 @@ alt.themes.enable("brand")
 DATA_BUCKET = st.secrets.get("SUPABASE_DATA_BUCKET", "data")  # bucket name
 sb_client, _ = _sb_client()
 
-if st.sidebar.button("🔄 Թարմացնել (Supabase)"):
-    st.cache_data.clear()
-    st.rerun()
+# Duplicate reload button removed
+
 
 with st.sidebar.expander("Վերբեռնել նոր Excel (Supabase)"):
-    st.warning("Ուշադրություն. Նոր ֆայլը կփոխարինի հինը (միշտ մնում է 1 ֆայլ):")
+    st.warning("Ուշադրություն. Նոր ֆայլը կավելացվի (չի ջնջի հինը):")
     upl_file = st.file_uploader("Ընտրեք .xlsx/.xls", type=["xlsx", "xls"], key="sb_upl_new")
     if upl_file:
         if st.button("Հաստատել և ուղարկել", type="primary"):
@@ -137,41 +135,68 @@ with st.sidebar.expander("Վերբեռնել նոր Excel (Supabase)"):
                         st.rerun()
 
 @st.cache_data(show_spinner="Загрузка данных из Supabase...", ttl=3600)
-def load_remote_excel():
+def load_remote_excels():
     if not sb_client:
-        return None, None
-    return get_latest_excel(sb_client, DATA_BUCKET)
+        return []
+    # NEW: Load ALL excels
+    from src.supabase import get_all_excels
+    return get_all_excels(sb_client, DATA_BUCKET)
 
-remote_content, remote_name = load_remote_excel()
-selected_path = None
+remote_files = load_remote_excels()
+selected_paths = []
 
-if remote_content:
-    st.sidebar.success(f"Ակտիվ ֆայլ: {remote_name}")
-    # Save to temp
-    tmp_path = IMPORTS_DIR / remote_name
-    tmp_path.write_bytes(remote_content)
-    
-    # Parse
-    bases_raw, weights_raw = parse_workbooks(tmp_path)
-    state.bases = bases_raw
-    state.weights = build_weights_dict(weights_raw)
-    state.last_file = str(tmp_path)
-    selected_path = tmp_path
+if remote_files:
+    st.sidebar.success(f"Supabase: գտնվել է {len(remote_files)} ֆայլ")
+    for content, name in remote_files:
+        tmp_path = IMPORTS_DIR / name
+        tmp_path.write_bytes(content)
+        selected_paths.append(tmp_path)
 else:
     # Fallback: check local cache
     existing = _list_saved_excels()
     if existing:
-        selected_path = existing[0]
-        st.sidebar.warning(f"Supabase-ում ֆայլ չկա, օգտագործվում է: {selected_path.name}")
+        selected_paths = existing
+        st.sidebar.warning(f"Supabase-ում ֆայլ չկա, օգտագործվում են: {[f.name for f in existing]}")
     else:
         st.sidebar.error(f"Supabase: ֆայլ չի գտնվել '{DATA_BUCKET}' բաժնում")
 
-# Если выбран файл и он изменился — перечитать базы и веса
-if selected_path is not None and state.get("last_file") != str(selected_path):
-    bases_raw, weights_raw = read_excel_all(str(selected_path))
-    state.bases = bases_raw
-    state.weights = build_weights_dict(weights_raw)
-    state.last_file = str(selected_path)
+# Parse ALL files and merge
+all_bases = {}
+all_weights = pd.DataFrame()
+loaded_files_sig = str([str(p) for p in selected_paths])
+
+if selected_paths and state.get("last_files_sig") != loaded_files_sig:
+    merged_bases = {}
+    merged_weights_list = []
+    
+    for p in selected_paths:
+        try:
+            b, w = parse_workbooks(p)
+            # Merge bases
+            for k, v in b.items():
+                if k in merged_bases:
+                    # If scenario exists (e.g. split across files), concat
+                    merged_bases[k] = pd.concat([merged_bases[k], v], ignore_index=True)
+                else:
+                    merged_bases[k] = v
+            
+            # Merge weights
+            w_df = build_weights_dict(w)
+            if not w_df.empty:
+                merged_weights_list.append(w_df)
+                
+        except Exception as e:
+            st.error(f"Error parsing {p.name}: {e}")
+
+    state.bases = merged_bases
+    state.weights = pd.concat(merged_weights_list, ignore_index=True) if merged_weights_list else pd.DataFrame()
+    # Deduplicate weights if needed
+    if not state.weights.empty:
+        # Normalize scenario names in weights too
+        state.weights["scenario"] = state.weights["scenario"].astype(str).str.strip()
+        state.weights = state.weights.drop_duplicates(subset=["scenario","qkey_norm"], keep="last")
+        
+    state.last_files_sig = loaded_files_sig
 
 # На каждом прогоне пересобираем рейтинги заново (без накопления в session)
 state.ratings_list = []
@@ -179,6 +204,104 @@ state.ratings_list = []
 if not state.bases:
     st.info("Բեռնեք Excel ֆայլը")
     st.stop()
+
+# --- NAVIGATION ---
+# --- NAVIGATION ---
+st.sidebar.markdown("---")
+
+# Reload button moved here for better context
+if st.sidebar.button("🔄 Թարմացնել տվյալները (Reload)"):
+    st.cache_data.clear()
+    for key in list(state.keys()):
+        del state[key]
+    st.rerun()
+
+nav_mode = st.sidebar.radio("Բաժին", ["Փուլ 1 | Retail", "Փուլ 2 | SA & HS", "Audio"])
+
+# Logout at the bottom
+st.sidebar.markdown("---")
+if st.sidebar.button("Logout", disabled=not st.session_state.get("auth_ok")):
+    for k in ("auth_ok","auth_user"):
+        st.session_state.pop(k, None)
+    st.rerun()
+
+if nav_mode == "Audio":
+    # Pass required arguments: sb_client and bucket name
+    # We use a default bucket "audio" if not specified, but let's check what src/supabase.py uses or what secrets have.
+    # In src/supabase.py: bucket = st.secrets.get("SUPABASE_BUCKET", "audio")
+    # In app.py: DATA_BUCKET = st.secrets.get("SUPABASE_DATA_BUCKET", "data") -> this is for Excel files!
+    # Audio usually uses a different bucket.
+    # Let's check how it was used before.
+    # It seems we need the audio bucket.
+    AUDIO_BUCKET = st.secrets.get("SUPABASE_BUCKET", "audio")
+    render_audio_tab(sb_client, AUDIO_BUCKET)
+    st.stop()
+
+# Filter bases by stage
+if nav_mode == "Փուլ 1 | Retail":
+    target_stage = "Retail"
+elif nav_mode == "Փուլ 2 | SA & HS":
+    target_stage = "Stage2"
+else:
+    target_stage = "Unknown"
+filtered_bases = {}
+
+for scen, df in state.bases.items():
+    # Check _stage_ flag (added in data_loader)
+    # If missing, assume Retail (legacy)
+    # If missing, assume Retail (legacy)
+    stage = df.get("_stage_", "Retail")
+    # Handle Series/DataFrame ambiguity if _stage_ is a column
+    if isinstance(stage, pd.Series):
+        stage = stage.iloc[0] if not stage.empty else "Retail"
+    
+    # ROBUST FILTERING: Override stage based on known scenario names
+    # This prevents "Retail" scenarios (BR1-5) from appearing in Stage 2 even if _stage_ tag is wrong
+    if scen in ["BR1", "BR2", "BR3", "BR4", "BR5"]:
+        actual_stage = "Retail"
+    elif scen in ["LAS_SA", "LAS_SFP", "LAS_SFP_CC", "HS_SA_YAP"]:
+        actual_stage = "Stage2"
+    else:
+        actual_stage = stage # Fallback to the tag
+
+    if actual_stage == target_stage:
+        filtered_bases[scen] = df
+
+if not filtered_bases:
+    st.info(f"Տվյալներ չկան {nav_mode}-ի համար")
+    # Debug info
+    with st.expander("Debug Info (Data Loading)", expanded=False):
+        st.write(f"Target Stage: {target_stage}")
+        st.write("All Loaded Bases:")
+        for k, v in state.bases.items():
+            s = v.get("_stage_", "Missing")
+            if isinstance(s, pd.Series): s = s.iloc[0]
+            st.write(f"- {k}: {s} (Rows: {len(v)})")
+        
+        # Specific check for HS_SA_YAP
+        if "HS_SA_YAP" in state.bases:
+            st.write("HS_SA_YAP found in bases.")
+        else:
+            st.write("HS_SA_YAP NOT found in bases.")
+            
+        if not state.weights.empty and "HS_SA_YAP" in state.weights["scenario"].unique():
+             st.write("HS_SA_YAP found in weights.")
+        else:
+             st.write("HS_SA_YAP NOT found in weights.")
+    st.stop()
+
+# Use filtered bases for the rest of the app
+active_bases = filtered_bases
+
+# Debug: Show what is active
+# with st.expander("Debug: Active Data", expanded=False):
+#     st.write(f"Active Scenarios: {list(active_bases.keys())}")
+#     if not state.weights.empty:
+#         st.write(f"Loaded Weight Scenarios: {state.weights['scenario'].unique().tolist()}")
+# We need to temporarily swap state.bases to active_bases for the logic below to work without changing everything
+# But state.bases is used in 'prepared' loop. 
+# Let's just use active_bases in the loop.
+
 # ===== end persistence block =====
 
 st.sidebar.markdown("---")
@@ -187,15 +310,21 @@ prepared = []
 state.ratings_list = []
 
 with st.container():  # скрытый պատրաստողական բլոկ առանց UI
-    for scen, base in state.bases.items():
+    for scen, base in active_bases.items():
         # comment: normalize scenario name
-        scen = scen if scen in ["BR1", "BR2", "BR3", "BR4", "BR5"] else "BR1"
+        scen = scen if scen in ["BR1", "BR2", "BR3", "BR4", "BR5"] else scen # Allow new scenarios
 
         # comment: filter base by scenario
-        df_scene = scoring.filter_by_scenario_column(base, scen)
+        # Only apply scenario column filtering for Retail (BR) scenarios
+        if scen in ["BR1", "BR2", "BR3", "BR4", "BR5"]:
+             df_scene = scoring.filter_by_scenario_column(base, scen)
+        else:
+             # For Stage 2, the sheet IS the scenario data
+             df_scene = base.copy()
 
         # NEW: detect employee and stage columns
-        emp_col_orig = pick_col(df_scene, keys=["SE Անուն/ազգանուն", "Employee", "Worker"])
+        emp_col_orig = pick_col(df_scene, keys=["SE Անուն/ազգանուն", "Employee", "Worker", "Աշխատակցի անունը՝", "Աշխատակցի անունը"])
+        # Stage column is removed from UI but we might still parse it if present
         stage_col_orig = pick_col(df_scene, keys=["Փուլ", "Stage", "Phase"])
         
         if emp_col_orig:
@@ -209,14 +338,16 @@ with st.container():  # скрытый պատրաստողական բլոկ առ�
         # comment: get question keys from weights
         qkeys = questions_from_weights(state.weights, scen)
         if not qkeys:
-            st.warning("Կշիռների թերթում տվյալ սցենարի հարցեր չեն հայտնաբերվել։ Խնդրում ենք ստուգել LAS/YAP թերթերը։")
+            # For Stage 2, we might not have weights loaded correctly if names don't match
+            # But we added logic in data_loader to map them.
+            st.warning(f"Կշիռների թերթում {scen} սցենարի հարցեր չեն հայտնաբերվել։")
             continue
 
         # comment: choose store column & skip columns
         options_cols = list(df_scene.columns)
         # авто-պարզել խանութի սյունակը (без UI)
         store_col = (
-            pick_col(df_scene, keys=["store","Մասնաճյուղի անվանում","Խանութ","Խանութի անվանում","Shop","Store"])
+            pick_col(df_scene, keys=["store","Մասնաճյուղի անվանում","Խանութ","Խանութի անվանում","Shop","Store", "Մասնաճյուղի՝ խանութի անվանում"])
             or (options_cols[1] if len(options_cols) > 1 else options_cols[0])
         )
 
@@ -247,6 +378,30 @@ with st.container():  # скрытый պատրաստողական բլոկ առ�
             qkeys_norm=qkeys,
             extra_id_cols=extra_ids
         )
+        
+        # Fallback: If long_df is empty (no questions matched) and it's HS_SA_YAP, try fuzzy matching
+        if long_df.empty and scen == "HS_SA_YAP" and qkeys:
+            st.toast(f"Attempting fuzzy match for {scen}...", icon="⚠️")
+            # Create a map of norm(col) -> col
+            col_map = {scoring.norm(c): c for c in df_for_long.columns}
+            # Try to find matches for qkeys
+            fuzzy_qkeys = []
+            for qk in qkeys:
+                # 1. Try contains
+                for nc, c in col_map.items():
+                    if qk in nc or nc in qk:
+                        fuzzy_qkeys.append(nc)
+            
+            if fuzzy_qkeys:
+                long_df = long_from_base(
+                    df_for_long,
+                    store_col=store_col,
+                    non_question_cols=skip_cols,
+                    scenario=scen,
+                    qkeys_norm=fuzzy_qkeys,
+                    extra_id_cols=extra_ids
+                )
+                st.toast(f"Fuzzy match found {len(fuzzy_qkeys)} columns for {scen}", icon="✅")
 
         # comment: collect ratings per scenario
         ratings_scene = extract_10pt_rating(df_scene, scen, store_col)
@@ -263,10 +418,58 @@ with st.container():  # скрытый պատրաստողական բլոկ առ�
     # финальная нормализация на всякий случай (если что-то проскочило)
     if not df_all.empty and "store" in df_all.columns:
         df_all["store"] = _normalize_store_col(df_all["store"])
+        # Fix: Remove nan/empty stores
+        df_all = df_all.dropna(subset=["store"])
+        df_all = df_all[df_all["store"].astype(str).str.strip() != "nan"]
+        df_all = df_all[df_all["store"].astype(str).str.strip() != ""]
+
+    # STRICT STAGE FILTERING (Final Guard)
+    if not df_all.empty:
+        # Normalize scenario names to ensure exact matching
+        df_all["scenario"] = df_all["scenario"].astype(str).str.strip()
+        
+        if nav_mode == "Փուլ 1 | Retail":
+            # Keep only BR1-BR5
+            df_all = df_all[df_all["scenario"].isin(["BR1", "BR2", "BR3", "BR4", "BR5"])]
+        elif nav_mode == "Փուլ 2 | SA & HS":
+            # Keep only Stage 2 scenarios
+            # Exclude BR1-BR5 explicitly using regex to be safe
+            # Matches ANY scenario starting with BR (case insensitive)
+            mask_br = df_all["scenario"].str.contains(r'^BR.*', case=False, regex=True)
+            df_all = df_all[~mask_br]
 
     if df_all.empty:
-        st.error("Հնարավոր չեղավ պատրաստել տվյալները։ Ստուգեք ներբեռված ֆայլը և կշիռների թերթերը։")
+        st.error("Հնարավոր չեղավ պատրաստել տվյալները (կամ սխալ փուլ)։ Ստուգեք ներբեռված ֆայլը և կշիռների թերթերը։")
+        # Debug info for empty result
+        with st.expander("Debug Info (Empty Result)", expanded=False):
+            st.write(f"Prepared count: {len(prepared)}")
+            st.write(f"Active Bases: {list(active_bases.keys())}")
         st.stop()
+
+    # Debug: Check if HS_SA_YAP is in df_all
+    if nav_mode == "Փուլ 2 | SA & HS":
+        hs_rows = df_all[df_all["scenario"] == "HS_SA_YAP"]
+        if hs_rows.empty:
+             # It's missing! Check why.
+             if "HS_SA_YAP" in active_bases:
+                 st.error("HS_SA_YAP data was loaded but dropped during processing!")
+                 # Re-run logic to show why
+                 base = active_bases["HS_SA_YAP"]
+                 qkeys = questions_from_weights(state.weights, "HS_SA_YAP")
+                 st.write(f"Weight QKeys count: {len(qkeys)}")
+                 
+                 # Check intersection
+                 norm_cols = [scoring.norm(c) for c in base.columns]
+                 intersection = set(norm_cols) & set(qkeys)
+                 st.write(f"Matching Columns count: {len(intersection)}")
+                 if not intersection:
+                     st.write("No columns matched! Check column names.")
+                     st.write(f"Data Columns (Norm): {norm_cols[:10]}")
+                     st.write(f"Weight QKeys (Norm): {qkeys[:10]}")
+             else:
+                 st.warning("HS_SA_YAP not found in active_bases.")
+    
+
 
     # === Visits & comments extraction (robust) ===
     def _to_minutes(series: pd.Series) -> pd.Series:
@@ -294,15 +497,15 @@ with st.container():  # скрытый պատրաստողական բլոկ առ�
     visits_rows = []
     comments_rows = []
 
-    for scen_name, base_df in state.bases.items():
+    for scen_name, base_df in active_bases.items():
         dfb = base_df.copy()
-        store_col = pick_col(dfb, keys=["store","Մասնաճյուղի անվանում","Խանութ","Խանութի անվանում","Shop","Store"]) or dfb.columns[0]
+        store_col = pick_col(dfb, keys=["store","Մասնաճյուղի անվանում","Խանութ","Խանութի անվանում","Shop","Store", "Մասնաճյուղի՝ խանութի անվանում"]) or dfb.columns[0]
         if store_col in dfb.columns:
             dfb[store_col] = _normalize_store_col(dfb[store_col])
         start_col = pick_col(dfb, keys=["Այցելության սկիզբ","Visit start"]) or pick_col(dfb, contains=["սկիզ","start"])
         end_col   = pick_col(dfb, keys=["Այցելության ավարտ","Visit end"])   or pick_col(dfb, contains=["ավարտ","end"])
         dur_col   = pick_col(dfb, keys=["Այցի ընդհանուր տևողություն","Duration"]) or pick_col(dfb, contains=["տևող","dur"])
-        date_col  = pick_col(dfb, keys=["Այցելության ամսաթիվ","Visit date"]) or pick_col(dfb, contains=["ամսաթ","date"])
+        date_col  = pick_col(dfb, keys=["Այցելության ամսաթիվ","Visit date", "Այցելության օր և ժամ"]) or pick_col(dfb, contains=["ամսաթ","date"])
 
         # Նորմալիզացված ամսաթվի Series (եթե չկա, բոլոր արժեքները NaT)
         if date_col and date_col in dfb.columns:
@@ -335,7 +538,7 @@ with st.container():  # скрытый պատրաստողական բլոկ առ�
 
             tmp = pd.DataFrame({
                 "store": dfb[store_col],
-                "scenario": scen_name if scen_name in ["BR1","BR2","BR3","BR4","BR5"] else "BR1",
+                "scenario": scen_name if scen_name in ["BR1","BR2","BR3","BR4","BR5"] else scen_name,
                 "visit_start": visit_start,
                 "visit_end": visit_end,
                 "visit_duration_min": visit_duration_min
@@ -366,7 +569,7 @@ with st.container():  # скрытый պատրաստողական բլոկ առ�
             if c_col and c_col in dfb.columns:
                 cc = dfb[[store_col, c_col]].copy()
                 cc.columns = ["store","text"]
-                cc["scenario"] = scen_name if scen_name in ["BR1","BR2","BR3","BR4","BR5"] else "BR1"
+                cc["scenario"] = scen_name if scen_name in ["BR1","BR2","BR3","BR4","BR5"] else scen_name
                 cc["type"] = c_name
                 cc = cc.dropna(subset=["text"])
                 # убрать Այո/Ոչ и пустяки
@@ -378,22 +581,54 @@ with st.container():  # скрытый պատրաստողական բլոկ առ�
     visits_df = pd.concat(visits_rows, ignore_index=True) if visits_rows else pd.DataFrame()
     comments_df = pd.concat(comments_rows, ignore_index=True) if comments_rows else pd.DataFrame()
 
+    # Assign Role for Stage 2
+    if nav_mode == "Փուլ 2 | SA & HS":
+        def _get_role(scen):
+            scen = str(scen).upper()
+            if "SA" in scen and "HS" not in scen: return "SA" # LAS_SA
+            if "SFP" in scen: return "HS" # LAS_SFP, LAS_SFP_CC
+            if "HS" in scen: return "HS" # HS_SA_YAP
+            return "Other"
+        df_all["role"] = df_all["scenario"].apply(_get_role)
+        
+        # Debug: Check role for HS_SA_YAP
+        if "HS_SA_YAP" in df_all["scenario"].unique():
+             role_val = df_all[df_all["scenario"]=="HS_SA_YAP"]["role"].iloc[0]
+             # st.toast(f"HS_SA_YAP Role: {role_val}", icon="🔍")
+
 # --- 3) Filters AFTER df_all exists ---
 with st.expander("Ֆիլտրեր", expanded=False):
     st.header("Ֆիլտրեր")
+    
+    # Filter options based on CURRENT df_all (which is already filtered by stage)
     stores = sorted(df_all["store"].dropna().unique().tolist())
     scenarios = sorted(df_all["scenario"].dropna().unique().tolist())
     sections = sorted(df_all["section"].dropna().unique().tolist())
+    
+    # Role filter for Stage 2
+    sel_role = []
+    if nav_mode == "Stage 2" and "role" in df_all.columns:
+        roles = sorted(df_all["role"].dropna().unique().tolist())
+        sel_role = st.multiselect("Դեր", options=roles, default=roles)
+
+    # Filter scenarios based on selected role
+    if sel_role:
+        role_scenarios = df_all[df_all["role"].isin(sel_role)]["scenario"].unique().tolist()
+        scenarios = sorted(list(set(scenarios) & set(role_scenarios)))
 
     sel_scen = st.multiselect("Սցենարներ", options=scenarios, default=scenarios)
+    
+    # Filter stores based on selected scenarios (optional, but good for context)
+    # stores_in_scen = df_all[df_all["scenario"].isin(sel_scen)]["store"].unique().tolist()
+    # stores = sorted(list(set(stores) & set(stores_in_scen)))
+    
     sel_stores = st.multiselect("Խանութներ", options=stores, default=stores)
     sel_sec = st.multiselect("Բաժիններ", options=sections, default=sections)
 
     employees = sorted(df_all["employee"].dropna().unique().tolist()) if "employee" in df_all.columns else []
-    stages = sorted(df_all["stage"].dropna().unique().tolist()) if "stage" in df_all.columns else []
+    # Removed Stage filter
 
     sel_emp = st.multiselect("Աշխատակիցներ", options=employees, default=[]) if employees else []
-    sel_stage = st.multiselect("Փուլեր", options=stages, default=stages) if stages else []
 
 # --- 4) Apply filters once selections are made ---
 mask = (
@@ -403,8 +638,8 @@ mask = (
 )
 if employees and sel_emp:
     mask &= df_all["employee"].isin(sel_emp)
-if stages:
-    mask &= df_all["stage"].isin(sel_stage)
+if nav_mode == "Stage 2" and sel_role:
+    mask &= df_all["role"].isin(sel_role)
 
 flt = df_all[mask]
 
@@ -451,8 +686,8 @@ if not _raw.empty and not pq.empty:
     # вклад вопроса в итог сценария
     pq["weighted_score_pct"] = (pq["score_question_pct"] * w_frac).round(2)
 
-tab_overview, tab_stores, tab_scen, tab_sections, tab_compare, tab_visits, tab_audio = st.tabs(
-    ["Ընդհանուր", "Խանութներ", "Սցենարներ", "Բաժիններ", "Համեմատել", "Այցելություններ", "Աուդիո"]
+tab_overview, tab_stores, tab_scen, tab_sections, tab_compare, tab_visits = st.tabs(
+    ["Ընդհանուր", "Խանութներ", "Սցենարներ", "Բաժիններ", "Համեմատել", "Այցելություններ"]
 )
 
 with tab_overview:
@@ -696,7 +931,29 @@ with tab_sections:
     st.caption(scoring.caption_sections_page_hy())
 
     # === Фильтры ===
-    scen_opts = sorted(state.weights["scenario"].dropna().unique()) if not state.weights.empty else []
+    all_weight_scens = sorted(state.weights["scenario"].dropna().unique()) if not state.weights.empty else []
+    
+    # Strict filtering for Sections tab based on nav_mode
+    if nav_mode == "Փուլ 1 | Retail":
+        # Keep only BR1-BR5 (exact match or regex if needed)
+        scen_opts = [s for s in all_weight_scens if s in ["BR1", "BR2", "BR3", "BR4", "BR5"]]
+    else:
+        # Stage 2: Exclude BR1-BR5 using regex
+        # Matches ANY scenario starting with BR (case insensitive)
+        scen_opts = [s for s in all_weight_scens if not re.match(r'^BR.*', str(s), re.I)]
+        
+    # Ensure options are present in current data (df_all)
+    # This respects the strict filtering done earlier on df_all
+    if not df_all.empty:
+        available_scens = set(df_all["scenario"].unique())
+        scen_opts = [s for s in scen_opts if s in available_scens]
+        
+
+        
+    # EXTRA GUARD: Remove BR scenarios again just in case
+    if nav_mode == "Փուլ 2 | SA & HS":
+        scen_opts = [s for s in scen_opts if "BR" not in str(s).upper()]
+
     sel_scenarios = st.multiselect(
         "Սցենարներ",
         options=scen_opts,
@@ -708,12 +965,16 @@ with tab_sections:
     sel_section_stores = st.multiselect(
         "Խանութներ",
         options=store_opts,
-        default=store_opts,
-        key="sec_store_multi"
+        default=[],  # Default empty
+        key="sec_store_multi",
+        placeholder="Ընտրեք խանութներ (դատարկ = բոլորը)"
     )
+    
+    # Logic: if empty, use all
+    actual_stores = sel_section_stores if sel_section_stores else store_opts
 
     # === Результаты по разделам: процент от максимума (по выбранным сценарием/магазинам) ===
-    sec_scores = scoring.section_scores(flt, scenarios=sel_scenarios, stores=sel_section_stores)
+    sec_scores = scoring.section_scores(flt, scenarios=sel_scenarios, stores=actual_stores)
     if sec_scores.empty:
         st.info("Չկան տվյալներ ընտրված ֆիլտրերով։")
     else:
@@ -732,8 +993,9 @@ with tab_sections:
         st.dataframe(tbl, use_container_width=True)
 
     # Таблица вопросов (также привести порядок)
-    if not pq.empty and sel_scenarios and sel_section_stores:
-        pq_filtered = pq[pq["scenario"].isin(sel_scenarios) & pq["store"].isin(sel_section_stores)].copy()
+    if not pq.empty and sel_scenarios:
+        # Use actual_stores here too
+        pq_filtered = pq[pq["scenario"].isin(sel_scenarios) & pq["store"].isin(actual_stores)].copy()
         if "section" in pq_filtered.columns:
             pq_filtered = scoring.apply_section_order(pq_filtered, "section")
             pq_filtered["section"] = pd.Categorical(pq_filtered["section"], categories=scoring.SECTION_ORDER, ordered=True)
@@ -873,11 +1135,22 @@ with tab_visits:
         v_scens = sorted(vbase["scenario"].dropna().unique().tolist())
         with st.expander("Ֆիլտրեր (Այցելություններ)", expanded=True):
             f_scens = st.multiselect("Սցենարներ", options=v_scens, default=v_scens, key="vis_scen")
-            f_stores = st.multiselect("Խանութներ", options=v_stores, default=v_stores, key="vis_store")
+            f_stores = st.multiselect("Խանութներ", options=v_stores, default=[], key="vis_store", placeholder="Ընտրեք խանութներ (դատարկ = բոլորը)")
             max_dur = st.slider("Մակս. տևողություն (րոպե) — հեռացնել ծայրահեղ արժեքները",
                                 min_value=30, max_value=180, value=60, step=5)
 
-        vflt = vbase[vbase["scenario"].isin(f_scens) & vbase["store"].isin(f_stores)].copy()
+        # Logic: if empty, use all
+        actual_v_stores = f_stores if f_stores else v_stores
+        
+        vflt = vbase[vbase["scenario"].isin(f_scens) & vbase["store"].isin(actual_v_stores)].copy()
+        
+        # Strict Stage Filtering for Visits
+        if nav_mode == "Փուլ 1 | Retail":
+             vflt = vflt[vflt["scenario"].isin(["BR1", "BR2", "BR3", "BR4", "BR5"])]
+        elif nav_mode == "Փուլ 2 | SA & HS":
+             mask_br = vflt["scenario"].astype(str).str.contains(r'^BR.*', case=False, regex=True)
+             vflt = vflt[~mask_br]
+             
         vflt["visit_duration_min"] = pd.to_numeric(vflt["visit_duration_min"], errors="coerce")
 
         # FILTER: исключить явные выбросы по длительности
@@ -984,14 +1257,5 @@ with st.expander("Տվյալների բազա", expanded=False):
             scen_calc = dbg_rows["scenario_calc_pct"].dropna().unique()
             if scen_calc.size:
                 st.info(f"Սցենարի վերահաշվարկված տոկոսը: {scen_calc[0]:.2f}%")
-
-# --- NEW: Աուդիո ---
-with tab_audio:
-    st.subheader("Աուդիո ֆայլեր")
-    st.caption("Բեռնեք, լսեք, խմբագրեք վերնագիրը/նկարագրությունը և ջնջեք ըստ անհրաժեշտության։")
-    sb, BUCKET = _sb_client()
-    if sb is None:
-        st.stop()
-    render_audio_tab(sb, BUCKET)
 
 st.caption("© Դաշբորդ — հաշվարկը հիմնված է «Այո» պատասխանների կշռած բաժնին։ LAS/YAP կշիռները կիրառվում են բաժնի (E) և սցենարի (F) մակարդակներում։")
