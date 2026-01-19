@@ -612,7 +612,7 @@ with st.expander("Ֆիլտրեր", expanded=False):
     
     # Role filter for Stage 2
     sel_role = []
-    if nav_mode == "Stage 2" and "role" in df_all.columns:
+    if nav_mode == "Փուլ 2 | SA & HS" and "role" in df_all.columns:
         roles = sorted(df_all["role"].dropna().unique().tolist())
         sel_role = st.multiselect("Դեր", options=roles, default=roles)
 
@@ -954,7 +954,6 @@ with tab_sections:
         scen_opts = [s for s in scen_opts if s in available_scens]
         
 
-        
     # EXTRA GUARD: Remove BR scenarios again just in case
     if nav_mode == "Փուլ 2 | SA & HS":
         scen_opts = [s for s in scen_opts if "BR" not in str(s).upper()]
