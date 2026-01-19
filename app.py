@@ -356,7 +356,12 @@ with st.container():  # скрытый պատրաստողական բլոկ առ�
             df_scene[store_col] = _normalize_store_col(df_scene[store_col])
 
         # список пропускаемых колонок — по умолчанию (без UI)
-        skip_cols = [c for c in options_cols[:8] if c != store_col]
+        # For Stage 2, questions start at col E (index 4), so we should only skip A-D (indices 0-3)
+        if nav_mode == "Փուլ 2 | SA & HS":
+             skip_cols = [c for c in options_cols[:4] if c != store_col]
+        else:
+             # For Stage 1, keep original behavior (skip 8)
+             skip_cols = [c for c in options_cols[:8] if c != store_col]
 
         # comment: prepare long form for scoring
         drop_list = [c for c in skip_cols if c in df_scene.columns and c != store_col]
