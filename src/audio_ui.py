@@ -229,6 +229,13 @@ def render_audio_tab(sb, bucket: str):
         min_dt = date.today()
         max_dt = date.today()
 
+    # FIX: If new records appeared (upload), but session state holds an older date,
+    # the new files are filtered out. We auto-extend the range if the user hasn't explicitly locked it?
+    # Simplified approach: If stored 'to' date is less than max available date, update it.
+    if "audio_to" in st.session_state:
+        if st.session_state["audio_to"] < max_dt:
+             st.session_state["audio_to"] = max_dt
+
     with col_d1:
         from_date = st.date_input("Սկիզբ", value=min_dt, min_value=min_dt, max_value=max_dt, key="audio_from")
     with col_d2:

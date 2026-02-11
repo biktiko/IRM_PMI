@@ -90,7 +90,9 @@ def _sb_list_all(sb, bucket: str) -> list[dict]:
     
     out = []
     try:
-        root = sb.storage.from_(bucket).list(path="")
+        # Increase limit for root folders (default is often 100)
+        # Using a large limit to capture all date-folders.
+        root = sb.storage.from_(bucket).list(path="", options={"limit": 3000, "offset": 0})
     except Exception as e:
         st.error(f"List error: {e}")
         return out
@@ -115,7 +117,8 @@ def _sb_list_all(sb, bucket: str) -> list[dict]:
     def fetch_folder(folder_name):
         results = []
         try:
-            sub = sb.storage.from_(bucket).list(path=folder_name)
+            # Also increase limit for files within a folder
+            sub = sb.storage.from_(bucket).list(path=folder_name, options={"limit": 3000, "offset": 0})
             for f in sub:
                 fn = f.get("name")
                 if fn:
