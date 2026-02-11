@@ -1,5 +1,18 @@
 import streamlit as st
 import re
+import os
+from dotenv import load_dotenv
+
+# Load .env from src/.env
+load_dotenv("src/.env")
+
+def get_secret(key, default=None):
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return os.getenv(key, default)
+
+
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -113,7 +126,7 @@ alt.themes.register("brand", brand_theme)
 alt.themes.enable("brand")
 
 # --- NEW: Supabase Auto-Load ---
-DATA_BUCKET = st.secrets.get("SUPABASE_DATA_BUCKET", "data")  # bucket name
+DATA_BUCKET = get_secret("SUPABASE_DATA_BUCKET", "data")  # bucket name
 sb_client, _ = _sb_client()
 
 # Duplicate reload button removed
@@ -233,7 +246,7 @@ if nav_mode == "Audio":
     # Audio usually uses a different bucket.
     # Let's check how it was used before.
     # It seems we need the audio bucket.
-    AUDIO_BUCKET = st.secrets.get("SUPABASE_BUCKET", "audio")
+    AUDIO_BUCKET = get_secret("SUPABASE_BUCKET", "audio")
     render_audio_tab(sb_client, AUDIO_BUCKET)
     st.stop()
 

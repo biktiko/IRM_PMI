@@ -1,7 +1,7 @@
 import json
 import mimetypes
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pathlib import Path
 import streamlit as st
 
@@ -37,9 +37,13 @@ def _parse_iso(ts: str | None) -> datetime | None:
     if not ts:
         return None
     try:
-        # поддержка "...Z" и без таймзоны
+        # Support "...Z" and generic ISO
         ts = ts.replace("Z", "+00:00")
-        return datetime.fromisoformat(ts)
+        dt = datetime.fromisoformat(ts)
+        # Ensure Naive (UTC) to match datetime.utcnow()
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     except Exception:
         return None
 
@@ -70,6 +74,8 @@ def _get_stage_and_category(title: str):
 
 @st.cache_data(show_spinner="Բեռնում ենք աուդիո ցուցակը...", ttl=3600)
 def _fetch_audio_records(_sb, bucket: str):
+    import concurrent.futures
+    
     # Листинг только аудио
     raw_files = _sb_list_all(_sb, bucket)
     items = []
@@ -85,20 +91,32 @@ def _fetch_audio_records(_sb, bucket: str):
     if not items:
         return []
 
-    # Сначала соберём записи с метаданными
+    # Параллельная загрузка метаданных
     records = []
-    for f in items:
+    
+    def process_item(f):
         path = f.get("full_path")
         filename = Path(path).name
+        # Note: _load_meta does a network call
         meta = _load_meta(_sb, bucket, path, default_title=filename)
         saved_dt = _parse_iso(meta.get("saved_at"))
+        
         # fallback: updated_at из storage (UTC)
         if saved_dt is None:
             upd = f.get("updated_at")
-            saved_dt = _parse_iso(upd) or datetime.utcnow()
+            saved_dt = _parse_iso(upd) 
+            # If still None (unlikely), default to utcnow
+            if saved_dt is None:
+                saved_dt = datetime.now(timezone.utc).replace(tzinfo=None) # naive UTC
+        
+        # Ensure saved_dt is naive UTC (just in case)
+        if saved_dt.tzinfo is not None:
+             saved_dt = saved_dt.astimezone(timezone.utc).replace(tzinfo=None)
+
         size = (f.get("metadata") or {}).get("size")
         stg, cat = _get_stage_and_category(meta["title"])
-        records.append({
+        
+        return {
             "path": path,
             "filename": filename,
             "title": meta["title"],
@@ -108,7 +126,16 @@ def _fetch_audio_records(_sb, bucket: str):
             "updated_at": f.get("updated_at"),
             "stage": stg,
             "category": cat
-        })
+        }
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        future_to_item = {executor.submit(process_item, f): f for f in items}
+        for future in concurrent.futures.as_completed(future_to_item):
+            try:
+                rec = future.result()
+                records.append(rec)
+            except Exception:
+                pass
     
     # Сортировка по дате добавления (новые сверху)
     records.sort(key=lambda r: r["saved_dt"], reverse=True)
