@@ -115,19 +115,29 @@ def _sb_list_all(sb, bucket: str) -> list[dict]:
             
     # Последовательный обход папок (во избежание проблем с сокетами)
     # WinError 10035 = Resource temporarily unavailable (non-blocking socket)
-    # Supabase/Postgrest клиент может плохо справляться с тредами на Windows.
+    import time
     for folder_name in folders:
-        try:
-            # Also increase limit for files within a folder
-            sub = sb.storage.from_(bucket).list(path=folder_name, options={"limit": 3000, "offset": 0})
-            for f in sub:
-                fn = f.get("name")
-                if fn:
-                    full = f"{folder_name}/{fn}"
-                    f["full_path"] = full
-                    out.append(f)
-        except Exception as e:
-            print(f"Error fetching folder {folder_name}: {e}")
+        time.sleep(0.05) # Small pause to let socket buffer clear
+        
+        # Simple retry logic for 10035
+        for attempt in range(3):
+            try:
+                # Also increase limit for files within a folder
+                sub = sb.storage.from_(bucket).list(path=folder_name, options={"limit": 3000, "offset": 0})
+                for f in sub:
+                    fn = f.get("name")
+                    if fn:
+                        full = f"{folder_name}/{fn}"
+                        f["full_path"] = full
+                        out.append(f)
+                break # Success
+            except Exception as e:
+                # If it's a socket error, wait and retry
+                if "10035" in str(e) and attempt < 2:
+                    time.sleep(0.2 * (attempt + 1))
+                    continue
+                print(f"Error fetching folder {folder_name}: {e}")
+                break
                 
     return out
 

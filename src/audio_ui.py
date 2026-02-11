@@ -76,92 +76,107 @@ def _get_stage_and_category(title: str):
                 
     return stage, category
 
-@st.cache_data(show_spinner="Բեռնում ենք աուդիո ցուցակը...", ttl=3600)
+# Removed show_spinner to use custom progress bar
+@st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_audio_records(_sb, bucket: str):
-    import concurrent.futures
+    import time
     
-    # Листинг только аудио
-    raw_files = _sb_list_all(_sb, bucket)
-    items = []
-    for f in raw_files:
-        path = f.get("full_path") or ""
-        name = Path(path).name
-        if not path or name.startswith("."):
-            continue
-        if Path(name).suffix.lower() not in AUDIO_EXTS:
-            continue
-        items.append(f)
+    # Init progress bar
+    prog_text = "Բեռնում ենք աուդիո ցուցակը... "
+    bar = st.progress(0, text=prog_text)
+    
+    try:
+        # Листинг только аудио
+        raw_files = _sb_list_all(_sb, bucket)
+        
+        # Update progress
+        bar.progress(10, text=f"{prog_text} (Ստացվել է {len(raw_files)} ֆայլ)")
+        
+        items = []
+        for f in raw_files:
+            path = f.get("full_path") or ""
+            name = Path(path).name
+            if not path or name.startswith("."):
+                continue
+            if Path(name).suffix.lower() not in AUDIO_EXTS:
+                continue
+            items.append(f)
 
-    if not items:
+        if not items:
+            bar.empty()
+            return []
+
+        # Последовательная загрузка метаданных (Sequential for safety)
+        # 10% -> 90%
+        records = []
+        total = len(items)
+        
+        for i, f in enumerate(items):
+            # Update progress every few items to reduce UI overhead
+            if i % 2 == 0 or i == total - 1:
+                pct = 10 + int(85 * (i + 1) / total)
+                bar.progress(pct, text=f"{prog_text} ({i + 1}/{total})")
+            
+            # Small sleep to prevent WinError 10035
+            time.sleep(0.02)
+            
+            # Process item inline (no threads)
+            try:
+                path = f.get("full_path")
+                filename = Path(path).name
+                
+                # Default title workaround
+                default_title = filename
+                if len(filename) > 33 and filename[32] == "_":
+                    try:
+                        uuid.UUID(filename[:32])
+                        default_title = filename[33:]
+                    except:
+                        pass
+
+                meta = _load_meta(_sb, bucket, path, default_title=default_title)
+                saved_dt = _parse_iso(meta.get("saved_at"))
+                
+                if saved_dt is None:
+                    upd = f.get("updated_at")
+                    saved_dt = _parse_iso(upd) 
+                    if saved_dt is None:
+                        saved_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+                
+                if saved_dt.tzinfo is not None:
+                    saved_dt = saved_dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+                size = (f.get("metadata") or {}).get("size")
+                stg, cat = _get_stage_and_category(meta["title"])
+                
+                records.append({
+                    "path": path,
+                    "filename": filename,
+                    "title": meta["title"],
+                    "description": meta["description"],
+                    "saved_dt": saved_dt,
+                    "size": size,
+                    "updated_at": f.get("updated_at"),
+                    "stage": stg,
+                    "category": cat
+                })
+            except Exception as e:
+                print(f"Skipping item {path}: {e}")
+                pass
+        
+        # Сортировка по дате добавления (новые сверху)
+        bar.progress(98, text="Սորտավորում...")
+        records.sort(key=lambda r: r["saved_dt"], reverse=True)
+        
+        bar.empty()
+        return records
+        
+    except Exception as e:
+        bar.empty()
+        st.error(f"Error fetching audio: {e}")
         return []
 
-    # Параллельная загрузка метаданных
-    records = []
-    
-    def process_item(f):
-        path = f.get("full_path")
-        filename = Path(path).name
-        
-        # Determine default title (fallback)
-        # If filename is like "uuid_realname", try to extract realname
-        default_title = filename
-        if len(filename) > 33 and filename[32] == "_":
-            # Check if first 32 chars are hex
-            try:
-                uuid.UUID(filename[:32])
-                default_title = filename[33:]
-            except:
-                pass
-
-        # Note: _load_meta does a network call
-        meta = _load_meta(_sb, bucket, path, default_title=default_title)
-        saved_dt = _parse_iso(meta.get("saved_at"))
-        
-        # fallback: updated_at из storage (UTC)
-        if saved_dt is None:
-            upd = f.get("updated_at")
-            saved_dt = _parse_iso(upd) 
-            # If still None (unlikely), default to utcnow
-            if saved_dt is None:
-                saved_dt = datetime.now(timezone.utc).replace(tzinfo=None) # naive UTC
-        
-        # Ensure saved_dt is naive UTC (just in case)
-        if saved_dt.tzinfo is not None:
-             saved_dt = saved_dt.astimezone(timezone.utc).replace(tzinfo=None)
-
-        size = (f.get("metadata") or {}).get("size")
-        stg, cat = _get_stage_and_category(meta["title"])
-        
-        return {
-            "path": path,
-            "filename": filename,
-            "title": meta["title"],
-            "description": meta["description"],
-            "saved_dt": saved_dt,
-            "size": size,
-            "updated_at": f.get("updated_at"),
-            "stage": stg,
-            "category": cat
-        }
-
-    # Reduce concurrency even further or go sequential if needed
-    # WinError 10035 suggests network stack overload on Windows
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future_to_item = {executor.submit(process_item, f): f for f in items}
-        for future in concurrent.futures.as_completed(future_to_item):
-            try:
-                rec = future.result()
-                records.append(rec)
-            except Exception as e:
-                # Log error but don't stop
-                print(f"Error processing audio item: {e}")
-                pass
-    
-    # Сортировка по дате добавления (новые сверху)
-    records.sort(key=lambda r: r["saved_dt"], reverse=True)
-    return records
-
-@st.fragment
+# Removed st.fragment to avoid UI ghosting/overlap issues with main app
 def render_audio_tab(sb, bucket: str):
     st.markdown("""
     <style>
