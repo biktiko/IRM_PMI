@@ -144,13 +144,17 @@ def _fetch_audio_records(_sb, bucket: str):
             "category": cat
         }
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+    # Reduce concurrency even further or go sequential if needed
+    # WinError 10035 suggests network stack overload on Windows
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_to_item = {executor.submit(process_item, f): f for f in items}
         for future in concurrent.futures.as_completed(future_to_item):
             try:
                 rec = future.result()
                 records.append(rec)
-            except Exception:
+            except Exception as e:
+                # Log error but don't stop
+                print(f"Error processing audio item: {e}")
                 pass
     
     # Сортировка по дате добавления (новые сверху)

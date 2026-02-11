@@ -113,9 +113,10 @@ def _sb_list_all(sb, bucket: str) -> list[dict]:
             obj["full_path"] = name
             out.append(obj)
             
-    # Параллельный обход папок
-    def fetch_folder(folder_name):
-        results = []
+    # Последовательный обход папок (во избежание проблем с сокетами)
+    # WinError 10035 = Resource temporarily unavailable (non-blocking socket)
+    # Supabase/Postgrest клиент может плохо справляться с тредами на Windows.
+    for folder_name in folders:
         try:
             # Also increase limit for files within a folder
             sub = sb.storage.from_(bucket).list(path=folder_name, options={"limit": 3000, "offset": 0})
@@ -124,16 +125,9 @@ def _sb_list_all(sb, bucket: str) -> list[dict]:
                 if fn:
                     full = f"{folder_name}/{fn}"
                     f["full_path"] = full
-                    results.append(f)
-        except Exception:
-            pass
-        return results
-
-    if folders:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_folder = {executor.submit(fetch_folder, f): f for f in folders}
-            for future in concurrent.futures.as_completed(future_to_folder):
-                out.extend(future.result())
+                    out.append(f)
+        except Exception as e:
+            print(f"Error fetching folder {folder_name}: {e}")
                 
     return out
 
