@@ -48,15 +48,19 @@ def _parse_iso(ts: str | None) -> datetime | None:
         return None
 
 def _get_stage_and_category(title: str):
-    title = title.strip()
+    title_clean = title.strip()
     stage = None
     category = None
     
+    # Helper to check prefix case-insensitively if needed, though strictly we stick to the requested format.
+    # But let's be robust: uppercase for checking
+    t_upper = title_clean.upper()
+    
     # Stage 1
-    if title.startswith("BR"):
+    if t_upper.startswith("BR"):
         stage = "1ին փուլ"
         for cat in ["BR1", "BR2", "BR3", "BR4", "BR5"]:
-            if title.startswith(cat):
+            if t_upper.startswith(cat):
                 category = cat
                 break
             
@@ -65,7 +69,7 @@ def _get_stage_and_category(title: str):
         # Stage 2 prefixes (sorted by length desc)
         stage2_cats = ["LAS_SFP&CC", "LAS_SA", "LAS_SFP", "HS_YAP", "SA_YAP"]
         for cat in stage2_cats:
-            if title.startswith(cat):
+            if t_upper.startswith(cat):
                 stage = "2րդ փուլ"
                 category = cat
                 break
@@ -97,8 +101,20 @@ def _fetch_audio_records(_sb, bucket: str):
     def process_item(f):
         path = f.get("full_path")
         filename = Path(path).name
+        
+        # Determine default title (fallback)
+        # If filename is like "uuid_realname", try to extract realname
+        default_title = filename
+        if len(filename) > 33 and filename[32] == "_":
+            # Check if first 32 chars are hex
+            try:
+                uuid.UUID(filename[:32])
+                default_title = filename[33:]
+            except:
+                pass
+
         # Note: _load_meta does a network call
-        meta = _load_meta(_sb, bucket, path, default_title=filename)
+        meta = _load_meta(_sb, bucket, path, default_title=default_title)
         saved_dt = _parse_iso(meta.get("saved_at"))
         
         # fallback: updated_at из storage (UTC)
