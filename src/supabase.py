@@ -159,8 +159,15 @@ def get_all_excels(sb, bucket: str) -> list[tuple[bytes, str]]:
         if not excels:
             return results
             
-        # Сортируем по дате изменения (самые новые первыми)
-        excels = sorted(excels, key=lambda x: x.get("updated_at", x.get("created_at", "")), reverse=True)
+        # Более надежная сортировка: пробуем найти дату в разных полях метаданных
+        def get_date(f):
+            # Пробуем updated_at, затем created_at, затем из вложенного словаря metadata
+            d = f.get("updated_at") or f.get("created_at")
+            if not d and "metadata" in f:
+                d = f["metadata"].get("last_modified") or f["metadata"].get("created_at")
+            return str(d) if d else ""
+
+        excels = sorted(excels, key=get_date, reverse=True)
             
         # Скачиваем каждый файл
         for f in excels:

@@ -223,6 +223,11 @@ if selected_paths and state.get("last_files_sig") != loaded_files_sig:
         state.weights = state.weights.drop_duplicates(subset=["scenario","qkey_norm"], keep="last")
         
     state.last_files_sig = loaded_files_sig
+    
+    # Отладочная информация (показываем какие этапы найдены в каких файлах)
+    with st.sidebar.expander("Отладка загрузки файлов", expanded=False):
+        for s, p in stage_to_file.items():
+            st.write(f"**{s}**: {p.name}")
 
 # На каждом прогоне пересобираем рейтинги заново (без накопления в session)
 state.ratings_list = []
