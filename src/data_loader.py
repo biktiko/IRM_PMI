@@ -57,7 +57,11 @@ def _identify_stage2_sheet(name: str):
     if re.match(S2_LAS_SFP_RE, name, re.I): return "LAS_SFP"
     if re.match(S2_LAS_SFP_CC_RE, name, re.I): return "LAS_SFP_CC"
     if re.match(S2_HS_SA_YAP_RE, name, re.I): return "HS_SA_YAP"
-    # if re.match(S2_HS_YAP_RE, name, re.I): return "HS_SA_YAP" # REMOVED: HS (YAP) is weights, not data!
+    return None
+
+def _identify_stage3_sheet(name: str):
+    if re.match(r'.*(Փուլ\s*3|Stage\s*3).*', name, re.I):
+        return "Stage3"
     return None
 
 def read_excel_all(xls_file):
@@ -81,6 +85,22 @@ def read_excel_all(xls_file):
         if s2_key:
             bases[s2_key] = xls.parse(sh, dtype=object)
             bases[s2_key]["_stage_"] = "Stage2"
+
+        s3_key = _identify_stage3_sheet(sh)
+        if s3_key:
+            bases[s3_key] = xls.parse(sh, dtype=object)
+            bases[s3_key]["_stage_"] = "Stage3"
+            continue
+            
+        # Fallback for Stage 3 if sheet name is generic like Sheet1
+        try:
+            df_peek = xls.parse(sh, nrows=0)
+            cols_str = " ".join(str(c).lower() for c in df_peek.columns)
+            if "iluma" in cols_str and "smartcore" in cols_str:
+                bases["Stage3"] = xls.parse(sh, dtype=object)
+                bases["Stage3"]["_stage_"] = "Stage3"
+        except Exception:
+            pass
 
     # 3. Weights (Retail - General)
     if "Weights" in sheets:
@@ -134,6 +154,13 @@ def read_excel_all(xls_file):
             w["scenario"] = found_key # Use the key (e.g. LAS_SA) as scenario name
             w["source"] = "Stage2_Weights"
             weights.setdefault(found_key, []).append(w)
+
+    # 6. Weights (Stage 3 Static)
+    try:
+        from src.weights_stage3 import get_static_weights
+        weights.setdefault("Stage3", []).append(get_static_weights())
+    except ImportError:
+        pass
 
     return bases, weights
 

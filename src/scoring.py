@@ -69,13 +69,22 @@ def _weighted(g: pd.DataFrame, weight_col: str) -> float:
 SCORE10_COL_BY_SCEN = {"BR1":"AV","BR2":"AW","BR3":"AS","BR4":"AX","BR5":"W"}
 
 def extract_10pt_rating(df: pd.DataFrame, scen: str, store_col: str) -> pd.DataFrame:
+    col = None
     letter = SCORE10_COL_BY_SCEN.get(scen)
-    if not letter: 
+    if letter:
+        idx = excel_col_to_idx(letter)
+        if 0 <= idx < len(df.columns):
+            col = df.columns[idx]
+            
+    # Fallback to fuzzy search for 0-10 rating if not found by letter
+    if not col:
+        candidates = [c for c in df.columns if "0-10 սանդղակով" in str(c) or "0-10" in str(c)]
+        if candidates:
+            col = candidates[0]
+
+    if not col:
         return pd.DataFrame(columns=["store","scenario","rating_10pt"])
-    idx = excel_col_to_idx(letter)
-    if idx < 0 or idx >= len(df.columns):
-        return pd.DataFrame(columns=["store","scenario","rating_10pt"])
-    col = df.columns[idx]
+        
     out = (df[[store_col, col]]
            .rename(columns={store_col:"store", col:"rating_10pt"})
            .assign(scenario=scen))
@@ -413,6 +422,7 @@ SECTION_ORDER = [
     "First Contact",
     "Identification",
     "Assessment",
+    "Additional Benefits/CATM",
     "Product Presentation",
     "Taste Presentation",
     "CO meter",

@@ -159,6 +159,9 @@ def get_all_excels(sb, bucket: str) -> list[tuple[bytes, str]]:
         if not excels:
             return results
             
+        # Сортируем по дате изменения (самые новые первыми)
+        excels = sorted(excels, key=lambda x: x.get("updated_at", x.get("created_at", "")), reverse=True)
+            
         # Скачиваем каждый файл
         for f in excels:
             filename = f["name"]
