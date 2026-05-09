@@ -24,15 +24,21 @@ def _parse_visit_date(series: pd.Series) -> pd.Series:
     # оставим только допустимые символы
     s = s.str.replace(r"[^0-9.]", "", regex=True)
 
-    # пробуем dd.mm.yyyy и dd.mm.yy (yy -> 20xx/19xx)
-    ext = s.str.extract(r'(?P<d>\d{1,2})\.(?P<m>\d{1,2})\.(?P<y>\d{2,4})')
+    # пробуем dd.mm.yyyy, dd.mm.yy и dd.mm
+    ext = s.str.extract(r'(?P<d>\d{1,2})\.(?P<m>\d{1,2})(?:\.(?P<y>\d{2,4}))?')
     d = pd.to_numeric(ext["d"], errors="coerce")
     m = pd.to_numeric(ext["m"], errors="coerce")
     y_raw = ext["y"].fillna("")
+    
+    # Если года нет, берем текущий
+    from datetime import datetime
+    current_year = datetime.now().year
+    
     y = pd.to_numeric(y_raw, errors="coerce")
+    y[y_raw == ""] = current_year
 
     # 2-значный год: 00-29 -> 2000+, 30-99 -> 1900+
-    y2_mask = y_raw.str.len() == 2
+    y2_mask = (y_raw.str.len() == 2)
     y_adj = y.copy()
     y_adj[y2_mask & (y <= 29)] = 2000 + y_adj[y2_mask & (y <= 29)]
     y_adj[y2_mask & (y >= 30)] = 1900 + y_adj[y2_mask & (y >= 30)]
