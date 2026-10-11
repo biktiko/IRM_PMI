@@ -121,12 +121,14 @@ if not st.session_state.get("auth_ok"):
     st.stop()
 # --- конец авторизации, ниже основной код ---
 
+APP_VERSION = "2026.10.11_v3.2_prod_fix"
+
 @st.cache_data(show_spinner=False)
 def load_excel_bytes(b: bytes):
     return b
 
 @st.cache_data(show_spinner=True)
-def parse_workbooks(path: Path):
+def parse_workbooks(path: Path, file_sig: str, version: str = APP_VERSION):
     return read_excel_all(path) 
 
 # ===== persistence: save uploads to ./imports and autoload latest =====
@@ -150,6 +152,13 @@ st.sidebar.title("Տվյալների ներմուծում")
 # upl = st.sidebar.file_uploader("Բեռնեք Excel ֆայլը", type=["xlsx","xls"])
 
 state = st.session_state
+if state.get("app_version") != APP_VERSION:
+    st.cache_data.clear()
+    for key in list(state.keys()):
+        if key not in ["auth_ok", "auth_user"]:
+            del state[key]
+    state["app_version"] = APP_VERSION
+
 if "bases" not in state:
     state.bases = {}
     state.weights = pd.DataFrame()
@@ -181,15 +190,15 @@ with st.sidebar.expander("Վերբեռնել նոր Excel (Supabase)"):
                         st.cache_data.clear()
                         st.rerun()
 
-@st.cache_data(show_spinner="Загрузка данных из Supabase...", ttl=3600)
-def load_remote_excels():
+@st.cache_data(show_spinner="Загрузка данных из Supabase...", ttl=1800)
+def load_remote_excels(version: str = APP_VERSION):
     if not sb_client:
         return []
     # NEW: Load ALL excels
     from src.supabase import get_all_excels
     return get_all_excels(sb_client, DATA_BUCKET)
 
-remote_files = load_remote_excels()
+remote_files = load_remote_excels(version=APP_VERSION)
 selected_paths = []
 
 if remote_files:
@@ -208,7 +217,7 @@ else:
         st.sidebar.error(f"Supabase: ֆայլ չի գտնվել '{DATA_BUCKET}' բաժնում")
 
 # Parse ALL files and organize by phase and substage
-loaded_files_sig = str([str(p) for p in selected_paths])
+loaded_files_sig = f"{APP_VERSION}_" + "_".join(f"{p.name}:{p.stat().st_size}" for p in selected_paths)
 
 if selected_paths and state.get("last_files_sig") != loaded_files_sig:
     phases_data = {
@@ -240,7 +249,8 @@ if selected_paths and state.get("last_files_sig") != loaded_files_sig:
                     "SA & HS": {"bases": {}, "weights_raw": []}
                 }
 
-            b, w = parse_workbooks(p)
+            file_sig = f"{p.name}_{p.stat().st_size}_{p.stat().st_mtime_ns}"
+            b, w = parse_workbooks(p, file_sig, version=APP_VERSION)
             for k, df in b.items():
                 phases_data[f_ph][f_sub]["bases"][k] = df
                 file_info.append((f_ph, f_sub, k, p.name))
