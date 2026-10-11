@@ -52,64 +52,94 @@ def _as_base(name: str):
         return SCENARIO_NAME_MAP.get(int(m2.group(1)))
     return None
 
-def _identify_stage2_sheet(name: str):
-    if re.match(S2_LAS_SA_RE, name, re.I): return "LAS_SA"
-    if re.match(S2_LAS_SFP_RE, name, re.I): return "LAS_SFP"
-    if re.match(S2_LAS_SFP_CC_RE, name, re.I): return "LAS_SFP_CC"
-    if re.match(S2_HS_SA_YAP_RE, name, re.I): return "HS_SA_YAP"
-    return None
-
-def _identify_stage3_sheet(name: str):
-    if re.match(r'.*(Փուլ\s*3|Stage\s*3).*', name, re.I):
-        return "Stage3"
-    return None
-
 def read_excel_all(xls_file):
+    filename = getattr(xls_file, "name", str(xls_file))
+    m_phase = re.search(r'_([1-3])\.(xlsx|xls)$', filename, re.I)
+    phase = int(m_phase.group(1)) if m_phase else 1
+
+    fn_upper = filename.upper()
+    is_br_file = "BR" in fn_upper
+
     xls = pd.ExcelFile(xls_file)
     sheets = xls.sheet_names
 
     bases: Dict[str, pd.DataFrame] = {}
     weights: Dict[str, List[pd.DataFrame]] = {}
 
-    # 1. Retail Stage (BR1..BR5)
+    # 1. Retail data sheets
     for sh in sheets:
+        # BR1..BR5
         scen = _as_base(sh)
         if scen:
-            bases[scen] = xls.parse(sh, dtype=object)
-            # Mark as Retail
-            bases[scen]["_stage_"] = "Retail"
+            df = xls.parse(sh, dtype=object)
+            df["_phase_"] = phase
+            df["_substage_"] = "Retail"
+            df["_role_"] = "SE"
+            bases[scen] = df
+        elif re.match(r'^\s*BR\s*$', sh, re.I):
+            df = xls.parse(sh, dtype=object)
+            df["_phase_"] = phase
+            df["_substage_"] = "Retail"
+            df["_role_"] = "SE"
+            bases["BR"] = df
+        elif is_br_file and re.match(r'^\s*(P1|ZYN)\s*$', sh, re.I):
+            scen_name = sh.strip().upper()
+            df = xls.parse(sh, dtype=object)
+            df["_phase_"] = phase
+            df["_substage_"] = "Retail"
+            df["_role_"] = "SE"
+            bases[scen_name] = df
 
-    # 2. Stage 2 Data Sheets
+    # 2. Hostess data sheets
     for sh in sheets:
-        s2_key = _identify_stage2_sheet(sh)
-        if s2_key:
-            bases[s2_key] = xls.parse(sh, dtype=object)
-            bases[s2_key]["_stage_"] = "Stage2"
+        if re.match(r'^\s*LAS\s*[_]?\s*SFP\s*$', sh, re.I):
+            df = xls.parse(sh, dtype=object)
+            df["_phase_"] = phase
+            df["_substage_"] = "SA & HS"
+            df["_role_"] = "HS"
+            bases["LAS_SFP"] = df
+        elif re.match(r'^\s*LAS\s*[_]?\s*SFP\s*&\s*CC\s*$', sh, re.I):
+            df = xls.parse(sh, dtype=object)
+            df["_phase_"] = phase
+            df["_substage_"] = "SA & HS"
+            df["_role_"] = "HS"
+            bases["LAS_SFP_CC"] = df
+        elif re.match(r'^\s*HS\s*[_]?\s*YAP\s*$', sh, re.I):
+            df = xls.parse(sh, dtype=object)
+            df["_phase_"] = phase
+            df["_substage_"] = "SA & HS"
+            df["_role_"] = "HS"
+            bases["HS_YAP"] = df
 
-        s3_key = _identify_stage3_sheet(sh)
-        if s3_key:
-            bases[s3_key] = xls.parse(sh, dtype=object)
-            bases[s3_key]["_stage_"] = "Stage3"
-            continue
-            
-        # Fallback for Stage 3 if sheet name is generic like Sheet1
-        try:
-            df_peek = xls.parse(sh, nrows=0)
-            cols_str = " ".join(str(c).lower() for c in df_peek.columns)
-            if "iluma" in cols_str and "smartcore" in cols_str:
-                bases["Stage3"] = xls.parse(sh, dtype=object)
-                bases["Stage3"]["_stage_"] = "Stage3"
-        except Exception:
-            pass
+    # 3. Shop Assistant data sheets
+    for sh in sheets:
+        if re.match(r'^\s*LAS\s*[_]?\s*SA\s*$', sh, re.I):
+            df = xls.parse(sh, dtype=object)
+            df["_phase_"] = phase
+            df["_substage_"] = "SA & HS"
+            df["_role_"] = "SA"
+            bases["LAS_SA"] = df
+        elif re.match(r'^\s*SA\s*[_]?\s*Dbase\s*$', sh, re.I):
+            df = xls.parse(sh, dtype=object)
+            df["_phase_"] = phase
+            df["_substage_"] = "SA & HS"
+            df["_role_"] = "SA"
+            bases["SA_Dbase"] = df
+        elif re.match(r'^\s*SA\s*[_]?\s*YAP\s*$', sh, re.I):
+            df = xls.parse(sh, dtype=object)
+            df["_phase_"] = phase
+            df["_substage_"] = "SA & HS"
+            df["_role_"] = "SA"
+            bases["SA_YAP"] = df
 
-    # 3. Weights (Retail - General)
+    # 4. Weights (Retail - General 'Weights' sheet)
     if "Weights" in sheets:
         dfw = xls.parse("Weights", dtype=object)
         wnorm = _normalize_weights_sheet(dfw)
         for scen, wpart in wnorm.groupby("scenario"):
             weights.setdefault(scen, []).append(wpart.drop(columns=["scenario"]))
 
-    # 4. Weights (Retail - LAS/YAP specific sheets)
+    # 5. Weights (Retail - LAS/YAP specific sheets: BR1..BR5)
     for sh in sheets:
         m_las = re.match(LAS_RE, sh, flags=re.I)
         m_yap = re.match(YAP_RE, sh, flags=re.I)
@@ -130,39 +160,78 @@ def read_excel_all(xls_file):
             w["source"] = "YAP"
             weights.setdefault(scen, []).append(w)
 
-    # 5. Weights (Stage 2)
-    # We iterate sheets again to find weights for Stage 2
-    for sh in sheets:
-        # Check against S2_WEIGHTS_MAP
-        found_key = None
-        for key, pats in S2_WEIGHTS_MAP.items():
-            for pat in pats:
-                if re.match(pat, sh, re.I):
-                    found_key = key
-                    break
-            if found_key: break
-        
-        if found_key:
-            df = xls.parse(sh, header=0, dtype=object)
-            
-            # Special handling for HS (YAP) which has shifted columns
-            if found_key == "HS_SA_YAP" and re.match(r'^\s*HS\s*\(\s*YAP\s*\)\s*$', sh, re.I):
-                w = _normalize_hs_yap_sheet(df)
-            else:
+    # 6. Weights (Phase 2 BR)
+    if is_br_file or "BR" in bases:
+        for sh in sheets:
+            if re.match(r'^\s*LAS\s*[_]?\s*Brand\s*Retail\s*$', sh, flags=re.I):
+                df = xls.parse(sh, header=0, dtype=object)
                 w = _normalize_las_sheet(df)
-                
-            w["scenario"] = found_key # Use the key (e.g. LAS_SA) as scenario name
-            w["source"] = "Stage2_Weights"
-            weights.setdefault(found_key, []).append(w)
+                w["scenario"] = "BR"
+                w["source"] = "LAS"
+                weights.setdefault("BR", []).append(w)
+            elif re.match(r'^\s*LAS[_\s-]*Brand\s*Retail[_\s-]*P1\s*$', sh, flags=re.I):
+                df = xls.parse(sh, header=0, dtype=object)
+                w = _normalize_las_sheet(df)
+                w["scenario"] = "P1"
+                w["source"] = "LAS"
+                weights.setdefault("P1", []).append(w)
+            elif re.match(r'^\s*LAS[_\s-]*Brand\s*Retail[_\s-]*ZYN\s*$', sh, flags=re.I):
+                df = xls.parse(sh, header=0, dtype=object)
+                w = _normalize_las_sheet(df)
+                w["scenario"] = "ZYN"
+                w["source"] = "LAS"
+                weights.setdefault("ZYN", []).append(w)
 
-    # 6. Weights (Stage 3 Static)
-    try:
-        from src.weights_stage3 import get_static_weights
-        weights.setdefault("Stage3", []).append(get_static_weights())
-    except ImportError:
-        pass
+    # 7. Weights (Hostess: LAS_SFP, LAS_SFP_CC, HS_YAP, LAS_SFP_ZYN)
+    for sh in sheets:
+        if re.match(r'^\s*LAS\s*[_]?\s*SFP\s*Hostess\s*$', sh, re.I) or re.match(r'^\s*LAS\s*[_]?\s*SFP\s*Hostess\s*[_]?\s*IQOS\s*$', sh, re.I):
+            df = xls.parse(sh, header=0, dtype=object)
+            w = _normalize_las_sheet(df)
+            w["scenario"] = "LAS_SFP"
+            weights.setdefault("LAS_SFP", []).append(w)
+        elif re.match(r'^\s*LAS\s*[_]?\s*SFP\s*Hostess\s*[_]?\s*ZYN\s*$', sh, re.I):
+            df = xls.parse(sh, header=0, dtype=object)
+            w = _normalize_las_sheet(df)
+            w["scenario"] = "LAS_SFP_ZYN"
+            weights.setdefault("LAS_SFP_ZYN", []).append(w)
+        elif re.match(r'^\s*LAS\s*[_]?\s*SFP\s*&\s*CC\s*Hostess\s*$', sh, re.I):
+            df = xls.parse(sh, header=0, dtype=object)
+            w = _normalize_las_sheet(df)
+            w["scenario"] = "LAS_SFP_CC"
+            weights.setdefault("LAS_SFP_CC", []).append(w)
+        elif (re.match(r'^\s*HS\s*(\(\s*YAP\s*\)|SA\s*[_]?\s*YAP|SA\s*\(\s*YAP\s*\))\s*$', sh, re.I) 
+              or re.match(r'^\s*HS\s*[_]?\s*SA\s*[_]?\s*\(?\s*YAP\s*\)?\s*$', sh, re.I)):
+            df = xls.parse(sh, header=0, dtype=object)
+            w = _normalize_hs_yap_sheet(df)
+            w["scenario"] = "HS_YAP"
+            weights.setdefault("HS_YAP", []).append(w)
 
-    return bases, weights
+    # 8. Weights (Shop Assistant: LAS_SA, SA_Dbase, SA_YAP)
+    for sh in sheets:
+        if re.match(r'^\s*LAS\s*[_]?\s*Shop\s*Assistant\s*$', sh, re.I):
+            df = xls.parse(sh, header=0, dtype=object)
+            w = _normalize_las_sheet(df)
+            if "SA_Dbase" in bases or phase == 2:
+                w_copy = w.copy()
+                w_copy["scenario"] = "SA_Dbase"
+                weights.setdefault("SA_Dbase", []).append(w_copy)
+            if "LAS_SA" in bases or phase == 1:
+                w_copy = w.copy()
+                w_copy["scenario"] = "LAS_SA"
+                weights.setdefault("LAS_SA", []).append(w_copy)
+        elif re.match(r'^\s*HS\s*[_]?\s*SA\s*[_]?\s*YAP\s*$', sh, re.I) or re.match(r'^\s*SA\s*\(\s*YAP\s*\)\s*$', sh, re.I):
+            df = xls.parse(sh, header=0, dtype=object)
+            w = _normalize_hs_yap_sheet(df)
+            w["scenario"] = "SA_YAP"
+            weights.setdefault("SA_YAP", []).append(w)
+
+    # Filter weights to only keep those matching bases in this file (unless file has no bases)
+    if bases:
+        relevant_weights = {k: v for k, v in weights.items() if k in bases}
+    else:
+        relevant_weights = weights
+
+    return bases, relevant_weights
 
 def _normalize_hs_yap_sheet(df: pd.DataFrame) -> pd.DataFrame:
     """
